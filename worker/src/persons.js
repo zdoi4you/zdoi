@@ -6,7 +6,7 @@
 
 import { ROLE_SUPER } from './config.js';
 import { fail, line, stamp, oneOf, isEmail, validEik, view } from './util.js';
-import { audit, cached, dropCache, setting } from './core.js';
+import { audit, cached, dropCache, setting, setSetting } from './core.js';
 import { accessOf, dropUser } from './auth.js';
 import { mailboxAddress } from './mailbox.js';
 
@@ -14,6 +14,21 @@ export const REG_BASIS = ['', 'ЕИК по Търговския закон (Тъ
 export const DEFAULT_CODE = 'zdoi';
 export const CODE_RE = /^[a-z][a-z0-9]{1,9}$/;
 const PREFIX_RE = /^[A-ZА-Я0-9]{2,10}$/;
+
+/*
+ * Вътрешен идентификатор на лицето за адреса за отговор: случаен, без връзка с кода или наименованието
+ * (priemna+k7q2mx-2026-0001@zdoi.eu). Пази се в настройките (ключ ptag:<код>) и не се сменя.
+ */
+const TAG_RE = /^[a-z][a-z0-9]{5}$/;
+function newTagId(taken) {
+  const A = 'abcdefghjkmnpqrstuvwxyz', B = A + '23456789';
+  let t;
+  do {
+    const b = crypto.getRandomValues(new Uint8Array(6));
+    t = A[b[0] % A.length] + [...b.slice(1)].map(x => B[x % B.length]).join('');
+  } while (taken.has(t));
+  return t;
+}
 
 export const ORG_DEFAULT = {
   name: 'Сдружение „Просвета за демокрация“', brand: 'ЗДОИ4You', regBasis: REG_BASIS[2], eik: '', address: '', oblast: '',
@@ -31,7 +46,7 @@ async function seedPerson(app) {
 const personView = r => {
   const o = view(r);
   PROFILE_KEYS.forEach(k => { if (o[k] === undefined || o[k] === null) o[k] = ''; });
-  return Object.assign(o, { isDefault: r.isDefault === 'Да', active: r.active !== 'Не' });
+  return Object.assign(o, { isDefault: r.isDefault === 'Да', active: r.active !== 'Не', tagId: r.tagId || '' });
 };
 
 export async function allPersons(app) {
@@ -48,6 +63,13 @@ export async function allPersons(app) {
       console.error('persons: кодът на лицето по подразбиране е „' + r.code + '“ – поправя се на ' + DEFAULT_CODE);
       await app.store.patch('persons', r._id, { code: DEFAULT_CODE });
       r.code = DEFAULT_CODE;
+    }
+    const taken = new Set();
+    for (const r of rows.sort((a, b) => Number(a._id) - Number(b._id))) {
+      let t = await setting(app, 'ptag:' + r.code, '');
+      if (!TAG_RE.test(t) || taken.has(t)) { t = newTagId(taken); await setSetting(app, 'ptag:' + r.code, t); }
+      taken.add(t);
+      r.tagId = t;
     }
     return rows.sort((a, b) => (b.isDefault === 'Да') - (a.isDefault === 'Да') || Number(a._id) - Number(b._id)).map(personView);
   });
@@ -78,12 +100,12 @@ export const boxOf = (app, p) => String((p && p.mailbox) || mailboxAddress(app.e
 export const regNoFor = (p, y, n) => 'П-' + (p.isDefault ? '' : p.code.toUpperCase() + '-') + y + '-' + String(n).padStart(4, '0');
 export const outNoFor = (p, y, n) => (p.outPrefix || 'ЗДОИ') + '-' + y + '-' + String(n).padStart(4, '0');
 /*
- * Етикет в адреса за отговор: кодът на лицето + годината и номера на преписката (zdoi-2026-0001, abc-2026-0001),
- * за да не се смесват отговорите, когато няколко лица използват една и съща кутия.
+ * Етикет в адреса за отговор: вътрешният идентификатор на лицето + годината и номера на преписката (k7q2mx-2026-0001),
+ * за да не се смесват отговорите, когато няколко лица използват една и съща кутия. Кодът на лицето не участва.
  */
 export const tagFor = (p, regNo) => {
   const m = /(\d{4})-(\d{4})$/.exec(String(regNo));
-  return (p.code || DEFAULT_CODE) + '-' + (m ? m[1] + '-' + m[2] : String(regNo).replace(/^П-/, '').toLowerCase());
+  return (p.tagId || 'p') + '-' + (m ? m[1] + '-' + m[2] : String(regNo).replace(/^П-/, '').toLowerCase());
 };
 
 /* ---------- достъп ---------- */

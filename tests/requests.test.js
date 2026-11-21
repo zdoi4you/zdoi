@@ -44,8 +44,8 @@ test('заявление: чернова → Изх. № → PDF → изпра�
 
   const s = await admin.call('mail.send', { regNo: c.regNo, to: 'obshtina@example.org', subject: '[П-2026-0001] Заявление', text: 'Приложено…', docs: [d1.outNo] });
   assert.equal(s.ok, true);
-  assert.equal(s.replyTo, 'priemna+zdoi-2026-0001@zdoi.eu');
-  assert.equal(box.sent[0].replyTo, 'priemna+zdoi-2026-0001@zdoi.eu');
+  assert.match(s.replyTo, /^priemna\+[a-z][a-z0-9]{5}-2026-0001@zdoi\.eu$/);
+  assert.equal(box.sent[0].replyTo, s.replyTo);
   assert.equal(box.sent[0].attachments[0].name, 'ЗДОИ-2026-0001 Заявление.pdf');
 
   const g = await admin.call('req.get', { regNo: c.regNo });
@@ -112,7 +112,7 @@ test('системни процеси: само администратор, пр
   const { admin } = await setupReq();
   const g = await admin.call('system.get');
   assert.equal(g.nextOutNo, 'ЗДОИ-2026-0001');
-  assert.equal(g.sampleReplyTo, 'priemna+zdoi-2026-0001@zdoi.eu');
+  assert.match(g.sampleReplyTo, /^priemna\+[a-z][a-z0-9]{5}-2026-0001@zdoi\.eu$/);
   const s = await admin.call('system.save', { org: Object.assign({}, g.org, { eik: '175074752' }), mailPoll: false });
   assert.equal(s.org.eik, '175074752');
   assert.equal(s.mailPoll, false);

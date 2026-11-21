@@ -1288,7 +1288,7 @@ async function requestView(regNo) {
     h('div', { class: 'reply-box' }, h('div', { class: 'small muted' }, 'Адрес за отговор'), h('b', { class: 'wrap-any' }, d.replyTo),
       edit ? h('div', { class: 'actions mt-8' },
         h('button', { class: 'btn sm', title: 'Копирай адреса', onclick: async () => { try { await navigator.clipboard.writeText(d.replyTo); toast('Копирано.'); } catch (_) { toast('Копирането не е разрешено.'); } } }, 'Копирай'),
-        h('button', { class: 'btn sm', title: 'Адрес с кода на лицето и уведомление до субекта (PDF)', onclick: () => changeReplyTo(d) }, 'Смени адреса…')) : null));
+        h('button', { class: 'btn sm', title: 'Адрес с вътрешния идентификатор на лицето и уведомление до субекта (PDF)', onclick: () => changeReplyTo(d) }, 'Смени адреса…')) : null));
 
   const ownerSel = h('select', { disabled: !edit, 'aria-label': 'Отговорник' }, h('option', { value: '' }, '— без отговорник —'), boot.users.filter(u => u.role !== 'Наблюдател').map(u => h('option', { value: u.username }, u.name)));
   ownerSel.value = r.owner || '';
@@ -1373,11 +1373,11 @@ async function requestView(regNo) {
 /* нов адрес за отговор: етикетът с кода на лицето; после уведомление до субекта (документ с Изх. №) */
 function changeReplyTo(d) {
   const r = d.request;
-  const target = d.mailbox.replace('@', '+' + (d.person ? d.person.code : 'zdoi') + '-' + r.regNo.slice(-9) + '@');
+  const target = d.mailbox.replace('@', '+' + ((d.person && d.person.tagId) || 'p') + '-' + r.regNo.slice(-9) + '@');
   const already = target === d.replyTo;
   const body = h('div', { class: 'stack' },
-    already ? h('p', null, 'Адресът за отговор вече е с кода на лицето: ', h('b', { class: 'mono' }, d.replyTo), '. Можете да подготвите уведомление до субекта (напр. ако преди е получил друг адрес).')
-      : [h('p', null, 'Адресът за отговор по преписката става с кода на лицето, за да не се смесват отговорите по преписки на различни лица:'),
+    already ? h('p', null, 'Адресът за отговор вече е с вътрешния идентификатор на лицето: ', h('b', { class: 'mono' }, d.replyTo), '. Можете да подготвите уведомление до субекта (напр. ако преди е получил друг адрес).')
+      : [h('p', null, 'Адресът за отговор по преписката става с вътрешния идентификатор на лицето, за да не се смесват отговорите по преписки на различни лица:'),
         h('p', { class: 'mono' }, d.replyTo, ' → ', h('b', null, target)),
         h('p', { class: 'small muted' }, 'Писмата до стария адрес продължават да се разпознават. След смяната се отваря уведомлението до субекта („Промяна на адрес“) – запишете го и го изпратете.')],
     h('div', { class: 'actions' },
@@ -1388,7 +1388,7 @@ function changeReplyTo(d) {
         try {
           const t = await api('req.retag', { regNo: r.regNo });
           dlg.close();
-          if (!t.changed) toast('Адресът вече е с кода на лицето.');
+          if (!t.changed) toast('Адресът вече е с вътрешния идентификатор на лицето.');
           const fresh = await api('req.get', { regNo: r.regNo });
           docEditor(fresh, 'Промяна на адрес', null, { oldReplyTo: t.changed ? t.oldReplyTo : '', newReplyTo: t.replyTo });
         } catch (ex) { toast(ex.message); e.target.disabled = false; }
@@ -2032,7 +2032,7 @@ async function personsView() {
     h('div', { class: 'card' }, table(['Лице', 'Номера', 'Пощенска кутия', 'Преписки', 'Достъп', 'Състояние', ''], d.persons.map(p => h('tr', null,
       h('td', null, h('b', null, p.name), p.isDefault ? h('span', { class: 'pill info ml-4' }, 'по подразбиране') : null, p.eik ? h('div', { class: 'small muted' }, Docs.idLabel(p.regBasis) + ' ' + p.eik) : null),
       h('td', { class: 'mono small' }, (p.isDefault ? 'П-ГГГГ-NNNN' : 'П-' + p.code.toUpperCase() + '-ГГГГ-NNNN'), h('br'), p.outPrefix + '-ГГГГ-NNNN'),
-      h('td', { class: 'small' }, p.box, p.mailbox ? null : h('div', { class: 'muted' }, 'обща кутия')),
+      h('td', { class: 'small' }, p.box, h('div', { class: 'muted mono' }, 'отговори: ' + p.box.replace('@', '+' + (p.tagId || '…') + '-ГГГГ-NNNN@')), p.mailbox ? null : h('div', { class: 'muted' }, 'обща кутия')),
       h('td', null, String(p.requests)),
       h('td', { class: 'small' }, d.users.filter(u => u.access !== '*' && u.access.includes(p.code)).map(u => u.name).join(', ') || '—'),
       h('td', null, p.active ? h('span', { class: 'pill ok' }, 'Активно') : h('span', { class: 'pill' }, 'Спряно')),

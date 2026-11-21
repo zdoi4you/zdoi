@@ -53,7 +53,9 @@ test('лица: суперадминистраторът добавя лице �
   assert.equal(d.outNo, 'АБВ-' + Y + '-0001');
   await ivan.call('doc.file', { outNo: d.outNo, pdf: PDF });
   const s = await ivan.call('mail.send', { regNo: c.regNo, to: 'obshtina@example.org', subject: '[' + c.regNo + '] Заявление', text: 'Приложено', docs: [d.outNo] });
-  assert.equal(s.replyTo, 'abc+abc-' + Y + '-0001@zdoi.eu');
+  // вътрешен идентификатор на лицето, не кодът му
+  assert.match(s.replyTo, new RegExp('^abc\\+[a-z][a-z0-9]{5}-' + Y + '-0001@zdoi\\.eu$'));
+  assert.ok(!s.replyTo.includes('+abc-'));
   assert.equal(boxes['abc@zdoi.eu'].sent.length, 1);
   assert.equal(boxes['priemna@zdoi.eu'].sent.length, 0);
 
@@ -130,13 +132,15 @@ test('адрес за отговор: с кода на лицето; смяна 
   const { env, admin, boxes } = await world();
   const c = await admin.call('req.create', reqData());
   const g = await admin.call('req.get', { regNo: c.regNo });
-  assert.equal(g.replyTo, 'priemna+zdoi-' + Y + '-0001@zdoi.eu');
+  const tagId = (await admin.call('persons.list')).persons.find(p => p.code === 'zdoi').tagId;
+  assert.match(tagId, /^[a-z][a-z0-9]{5}$/);
+  assert.equal(g.replyTo, 'priemna+' + tagId + '-' + Y + '-0001@zdoi.eu');
   // преписка със стар етикет (p2026-0001) получава нов адрес
   const rec = (await env.__store.list('requests', { regNo: c.regNo }))[0];
   await env.__store.patch('requests', rec._id, { tag: 'p' + Y + '-0001' });
   const t = await admin.call('req.retag', { regNo: c.regNo });
   assert.equal(t.oldReplyTo, 'priemna+p' + Y + '-0001@zdoi.eu');
-  assert.equal(t.replyTo, 'priemna+zdoi-' + Y + '-0001@zdoi.eu');
+  assert.equal(t.replyTo, 'priemna+' + tagId + '-' + Y + '-0001@zdoi.eu');
   assert.equal((await admin.call('req.retag', { regNo: c.regNo })).changed, false);
   // уведомлението за промяната е документ с Изх. №
   assert.equal((await admin.call('doc.reserve', { regNo: c.regNo, kind: 'Промяна на адрес', payload: { oldReplyTo: t.oldReplyTo, newReplyTo: t.replyTo } })).outNo, 'ЗДОИ-' + Y + '-0001');
