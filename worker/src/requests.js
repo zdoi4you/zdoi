@@ -298,12 +298,22 @@ export async function docReserve(d, ctx, app) {
     return { outNo: doc.outNo, date: doc.date };
   }
   const date = todayIso(), y = date.slice(0, 4), person = await personOf(app, codeOf(r));
-  const rec = await insertUnique(app, 'docs', {}, 'outNo', n => outNoFor(person, y, n),
+  // проследяемост: първият документ по преписката получава главния Изх. №, следващите – същия с индекс (…-0005-1, …-0005-2)
+  const main = mainOutNo(r, await app.store.list('docs', { regNo: r.regNo }));
+  const rec = await insertUnique(app, 'docs', {}, 'outNo', main ? n => main + '-' + n : n => outNoFor(person, y, n),
     { regNo: r.regNo, kind, date, title, payload, by: ctx.username, at: stamp() });
   if (kind === 'Заявление' && !r.outNo) await app.store.patch('requests', r._id, { outNo: rec.outNo, updatedAt: stamp() });
   await event(app, r.regNo, ctx.username, 'Документ', kind + ' изх. № ' + rec.outNo);
   await audit(app, ctx.username, 'Нов документ', rec.outNo, kind + ' по ' + r.regNo);
   return { outNo: rec.outNo, date };
+}
+
+/* главният Изх. № на преписката: на заявлението, иначе на първия документ без индекс */
+const PLAIN_NO = /^[A-ZА-Я0-9]{2,10}-\d{4}-\d{4}$/;
+export function mainOutNo(r, docs) {
+  if (r.outNo && PLAIN_NO.test(r.outNo)) return r.outNo;
+  const first = docs.filter(x => PLAIN_NO.test(x.outNo || '')).sort((a, b) => Number(a._id) - Number(b._id))[0];
+  return first ? first.outNo : '';
 }
 
 const MAX_PDF = 8 * 1048576;

@@ -30,7 +30,7 @@ async function setupReq() {
 }
 
 test('заявление: чернова → Изх. № → PDF → изпращане с етикет за отговор', async () => {
-  const { admin, box } = await setupReq();
+  const { env, admin, box } = await setupReq();
   const c = await admin.call('req.create', reqData());
   assert.equal(c.regNo, 'П-2026-0001');
   assert.equal((await admin.call('req.create', reqData({ entity: { name: 'X', eik: '123' } }))).error, 'eik');
@@ -55,8 +55,18 @@ test('заявление: чернова → Изх. № → PDF → изпра�
   assert.equal(g.mail.length, 1);
   // изпратеният документ не се редактира
   assert.equal((await admin.call('doc.reserve', { regNo: c.regNo, kind: 'Заявление', outNo: d1.outNo, payload: {} })).error, 'value');
-  // второ заявление през годината взема следващия номер
-  assert.equal((await admin.call('doc.reserve', { regNo: c.regNo, kind: 'Уточнение', payload: {} })).outNo, 'ЗДОИ-2026-0002');
+  // проследяемост: следващите документи по преписката носят главния номер с индекс
+  assert.equal((await admin.call('doc.reserve', { regNo: c.regNo, kind: 'Уточнение', payload: {} })).outNo, 'ЗДОИ-2026-0001-1');
+  assert.equal((await admin.call('doc.reserve', { regNo: c.regNo, kind: 'Промяна на адрес', payload: {} })).outNo, 'ЗДОИ-2026-0001-2');
+  // друга преписка получава нов главен номер, а после – своите индекси
+  const c2 = await admin.call('req.create', reqData());
+  assert.equal((await admin.call('doc.reserve', { regNo: c2.regNo, kind: 'Писмо', payload: {} })).outNo, 'ЗДОИ-2026-0002');
+  assert.equal((await admin.call('doc.reserve', { regNo: c2.regNo, kind: 'Заявление', payload: {} })).outNo, 'ЗДОИ-2026-0002-1');
+  // отговор с индексиран номер в темата се разпределя към преписката по главния номер
+  const { matchRequest } = await import('../worker/src/requests.js');
+  const all = await env.__store.list('requests');
+  const [hit] = await matchRequest(makeApp(env, env.__store, env.__kv, null), { to: [], cc: [], from: 'x@example.org', subject: 'Относно Ваше писмо изх. № ЗДОИ-2026-0002-1', body: '' }, all);
+  assert.equal(hit && hit.regNo, c2.regNo);
 });
 
 test('входяща поща: етикет след „+“, номер в темата, неразпределени', async () => {

@@ -1358,7 +1358,7 @@ async function requestView(regNo) {
           ['Задължен субект', [ent.name, ent.eik ? capital(Docs.idLabel(ent.regBasis)) + ' ' + ent.eik : '', ent.address, ent.email].filter(Boolean).join(' · ')],
           ['Заявител', r.mode === 'Клиент' ? [ap.name, ap.eik ? capital(Docs.idLabel(ap.regBasis)) + ' ' + ap.eik : '', ap.address, ap.email].filter(Boolean).join(' · ') + ' (чрез ' + (org.brand || org.name) + ' като пълномощник)' : org.name + (org.brand && org.brand !== org.name ? ' (' + org.brand + ')' : '')],
           manyPersons() ? ['Лице (регистър и поща)', org.name + ' · ' + d.mailbox] : null,
-          ['Изх. № на заявлението', r.outNo], ['Изпратено', r.sentAt ? fmtDate(r.sentAt) + (r.sentHow ? ' – ' + (r.sentHow === 'На място' ? 'лично в деловодството' : r.sentHow) : '') : ''],
+          ['Изх. № на заявлението', r.outNo], mainNo(d) && mainNo(d) !== r.outNo ? ['Главен Изх. №', mainNo(d) + ' (документите са ' + mainNo(d) + '-1, -2…)'] : null, ['Изпратено', r.sentAt ? fmtDate(r.sentAt) + (r.sentHow ? ' – ' + (r.sentHow === 'На място' ? 'лично в деловодството' : r.sentHow) : '') : ''],
           ['Вх. № при субекта', r.entityRegNo ? r.entityRegNo + (r.entityRegDate ? ' от ' + fmtDate(r.entityRegDate) : '') : ''],
           ['Уточняване', r.clarifyAskedAt ? 'поискано ' + fmtDate(r.clarifyAskedAt) + (r.clarifySentAt ? ', изпратено ' + fmtDate(r.clarifySentAt) : '') : ''],
           ['Решение', r.decisionNo ? '№ ' + r.decisionNo + (r.decisionDate ? ' от ' + fmtDate(r.decisionDate) : '') : ''], ['Резултат', r.outcome],
@@ -1394,6 +1394,15 @@ function changeReplyTo(d) {
         } catch (ex) { toast(ex.message); e.target.disabled = false; }
       } }, 'Смени и подготви уведомление')));
   const dlg = dialog('Адрес за отговор – ' + r.regNo, body);
+}
+
+/* главният Изх. № на преписката (както на сървъра): на заявлението, иначе на първия документ без индекс */
+const PLAIN_NO = /^[A-ZА-Я0-9]{2,10}-\d{4}-\d{4}$/;
+function mainNo(d) {
+  const r = d.request;
+  if (r.outNo && PLAIN_NO.test(r.outNo)) return r.outNo;
+  const first = d.docs.filter(x => PLAIN_NO.test(x.outNo || '')).sort((a, b) => Number(a._id) - Number(b._id))[0];
+  return first ? first.outNo : '';
 }
 
 /* ---------- документ: заявление, уточнение, писмо, промяна на адрес ---------- */
@@ -1458,7 +1467,7 @@ function docEditor(d, kind, existing, preset) {
     if (points && !p.points.length) throw new Error('Добавете поне една точка.');
     return p;
   };
-  const status = h('p', { class: 'small muted' }, existing ? 'Изх. № ' + existing.outNo + ' се запазва.' : 'Изх. № (' + (org.outPrefix || 'ЗДОИ') + '-ГГГГ-NNNN) се дава при записване.');
+  const status = h('p', { class: 'small muted' }, existing ? 'Изх. № ' + existing.outNo + ' се запазва.' : mainNo(d) ? 'Изх. № ' + mainNo(d) + '-N (главният номер на преписката с пореден индекс) се дава при записване.' : 'Главният Изх. № на преписката (' + (org.outPrefix || 'ЗДОИ') + '-ГГГГ-NNNN) се дава при записване; следващите документи ще са със същия номер и индекс.');
   const save = async (form, then) => {
     const p = collect(form);
     status.textContent = 'Записване…';
