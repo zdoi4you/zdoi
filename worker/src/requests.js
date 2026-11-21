@@ -10,7 +10,7 @@ import { term, termMonths, daysBetween } from './calendar.js';
 import { audit, mail, insertUnique, setting, setSetting } from './core.js';
 import { SCHEMA } from './schema.js';
 import { notifyOf } from './auth.js';
-import { usersBrief } from './users.js';
+import { usersBrief, assignCheck } from './users.js';
 import { getMailbox, plusOf, mailboxAddress, fromB64 } from './mailbox.js';
 import { REG_BASIS, allPersons, personOf, codeOf, orgProfile, boxOf, regNoFor, outNoFor, tagFor, allowedCodes, saveDefaultProfile } from './persons.js';
 
@@ -182,6 +182,7 @@ export async function reqCreate(d, ctx, app) {
   const person = await personFor(app, ctx, line(d.person, 10));
   const v = reqFields(d, person);
   v.owner = await checkOwner(app, line(d.owner, 40));
+  assignCheck(ctx, '', v.owner);
   v.person = person.code;
   const y = todayIso().slice(0, 4);
   const rec = await insertUnique(app, 'requests', {}, 'regNo', n => regNoFor(person, y, n),
@@ -245,7 +246,8 @@ export async function reqAssign(d, ctx, app) {
   unlocked(r);
   const owner = await checkOwner(app, line(d.owner, 40));
   if (owner === r.owner) return { owner };
-  if (!ctx.perms.casesAll && r.owner && r.owner !== ctx.username) fail('role', 'Само отговорникът или потребител с право „всички преписки“ сменя отговорника.');
+  if (!ctx.perms.assign && !ctx.perms.reqEdit && !ctx.perms.reqCreate) fail('role', 'Нямате право за това действие.');
+  assignCheck(ctx, r.owner || '', owner);
   await app.store.patch('requests', r._id, { owner, updatedAt: stamp() });
   await event(app, r.regNo, ctx.username, 'Отговорник', owner ? 'Отговорник: ' + owner : 'Без отговорник');
   if (owner && owner !== ctx.username) await notifyOwner(app, ctx, Object.assign({}, r, { owner }), 'Определени сте за отговорник.', 'assign');
@@ -541,13 +543,11 @@ export async function mailRecord(d, ctx, app) {
 }
 
 export async function mailInbox(d, ctx, app) {
-  if (!ctx.perms.casesAll) fail('role', 'Неразпределената поща се вижда от потребители с право „всички преписки“.');
   const boxes = await personBoxes(app, ctx, line(d.person, 10));
   return { mail: (await unassigned(app, boxes)).map(mailView).sort(byDesc('at')), boxes };
 }
 
 export async function mailAssign(d, ctx, app) {
-  if (!ctx.perms.casesAll) fail('role', 'Нямате право за това действие.');
   const m = await app.store.get('mail', str(d.id, 20));
   if (!m || !(await myBoxes(app, ctx)).includes(m.box || mailboxAddress(app.env))) fail('notfound', 'Писмото не е намерено.');
   const r = await findReq(app, d.regNo, ctx);
@@ -560,7 +560,7 @@ export async function mailAttachment(d, ctx, app) {
   const m = await app.store.get('mail', str(d.id, 20));
   if (!m) fail('notfound', 'Писмото не е намерено.');
   if (m.regNo) await findReq(app, m.regNo, ctx);
-  else if (!ctx.perms.casesAll || !(await myBoxes(app, ctx)).includes(m.box || mailboxAddress(app.env))) fail('notfound', 'Писмото не е намерено.');
+  else if (!ctx.perms.mailbox || !(await myBoxes(app, ctx)).includes(m.box || mailboxAddress(app.env))) fail('notfound', 'Писмото не е намерено.');
   const a = safeJson(m.attachments || '[]')[Number(d.index)];
   if (!a || !a.fileId) fail('notfound', 'Файлът не е намерен.');
   return { name: a.name, contentType: a.contentType || 'application/octet-stream', data: b64(await app.store.downloadFile(a.fileId)) };
@@ -714,7 +714,7 @@ export async function reqDashboard(app, ctx, only) {
     reqWaiting: rows.filter(r => r.due).map(brief).sort((a, b) => a.due.localeCompare(b.due)),
     reqSilent: rows.filter(r => r.due && !r.ours && r.daysLeft < 0 && r.silentDays >= 0).map(brief),
     reqAppeals: rows.filter(r => r.appealDays !== null && r.appealDays >= 0).map(brief),
-    unassignedMail: ctx.perms.casesAll ? (await unassigned(app, await personBoxes(app, ctx, only))).length : 0
+    unassignedMail: ctx.perms.mailbox ? (await unassigned(app, await personBoxes(app, ctx, only))).length : 0
   };
 }
 

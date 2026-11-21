@@ -127,7 +127,7 @@ test('преписки: номер, срок, промяна, история', a
 
 test('преписки: видимост, наблюдател, заключване', async () => {
   const { env, outbox, admin } = await ready();
-  const staff = await addUser(env, outbox, admin, 'petar', 'Служител', { perms: ['casesEdit'] });
+  const staff = await addUser(env, outbox, admin, 'petar', 'Служител', { perms: ['inReg', 'inRegEdit', 'lock', 'comment'] });
   const viewer = await addUser(env, outbox, admin, 'nabl', 'Наблюдател');
   const { regNo } = await admin.call('case.create', caseData());
   assert.equal((await staff.call('case.get', { regNo })).error, 'notfound');

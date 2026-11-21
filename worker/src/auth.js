@@ -6,7 +6,7 @@
  * проверяват офлайн без ключа. Сесията е в бисквитка HttpOnly; в KV се пази само хешът на ключа ѝ.
  */
 
-import { CFG, ROLE_SUPER, ROLE_PERMS, PERMS, SESSION_CHOICES, isAdminRole, sessionMinOf } from './config.js';
+import { CFG, ROLE_SUPER, ROLE_VIEW, ROLE_PERMS, PERMS, ADMIN_PERMS, VIEW_PERMS, LEGACY_PERMS, SESSION_CHOICES, isAdminRole, sessionMinOf } from './config.js';
 import { fail, str, stamp } from './util.js';
 import { sha256, randomToken, randomCode, hmac, sameText } from './crypto.js';
 import { audit, mail, throttle, cached, dropCache } from './core.js';
@@ -42,14 +42,31 @@ export function accessMail(app, to, username, link, validFor) {
 export const findUser = async (app, username) => (await app.store.list('users', { username }))[0] || null;
 export const dropUser = (app, username) => dropCache(app, 'usr:' + username);
 
+/*
+ * Записаните права: { v: 2, p: [...] } (подробни по операции) или стар списък [...] от преди 2026-11-22.
+ * Без запис – правата по подразбиране за ролята.
+ */
+export function storedPerms(u) {
+  if (!u.perms) return null;
+  let raw;
+  try { raw = JSON.parse(u.perms); } catch (_) { return null; }
+  if (raw && raw.v === 2 && Array.isArray(raw.p)) return raw.p.filter(k => PERMS.includes(k));
+  if (!Array.isArray(raw)) return null;
+  // стар списък: „casesEdit“ се разгръща, регистрите се виждаха от всички, а администраторите имаха всичко
+  const list = new Set(['inReg', 'outReg']);
+  raw.forEach(k => (LEGACY_PERMS[k] || [k]).forEach(x => list.add(x)));
+  if (isAdminRole(u.role)) ADMIN_PERMS.forEach(k => list.add(k));
+  return [...list].filter(k => PERMS.includes(k));
+}
+
 export function permsOf(u) {
-  let list = null;
-  if (u.perms) { try { list = JSON.parse(u.perms); } catch (_) { list = null; } }
-  if (!Array.isArray(list)) list = ROLE_PERMS[u.role] || [];
   const out = {};
-  list.forEach(k => { if (PERMS.includes(k)) out[k] = true; });
-  // наблюдателят само преглежда, каквито и права да са записани
-  if (!isAdminRole(u.role) && !(ROLE_PERMS[u.role] || []).includes('casesEdit')) ['casesEdit', 'courts', 'addressees', 'departments'].forEach(k => delete out[k]);
+  if (u.role === ROLE_SUPER) { PERMS.forEach(k => { out[k] = true; }); return out; }
+  const list = storedPerms(u) || ROLE_PERMS[u.role] || [];
+  list.forEach(k => { out[k] = true; });
+  // администраторските права важат само за администратор; наблюдателят само преглежда
+  if (!isAdminRole(u.role)) ADMIN_PERMS.forEach(k => delete out[k]);
+  if (u.role === ROLE_VIEW) Object.keys(out).forEach(k => { if (!VIEW_PERMS.includes(k)) delete out[k]; });
   return out;
 }
 
@@ -86,8 +103,23 @@ export function oauthOf(u) {
 const badLogin = left => fail('login', 'Грешен потребител или парола.' + (left ? ' Остават ' + left + (left === 1 ? ' опит.' : ' опита.') : ''));
 const LOCKED = 'Твърде много неуспешни опити. Опитайте отново след 15 минути или поискайте нова парола по имейл.';
 
+/* IP адресът се записва с приблизителното място: „1.2.3.4 (Sofia, BG)“ */
 export const recordLogin = (app, username, result) =>
-  app.store.insert('logins', { at: stamp(), username, ip: app.ip, agent: app.agent, result });
+  app.store.insert('logins', { at: stamp(), username, ip: app.ip + (app.ip && app.geo ? ' (' + app.geo + ')' : ''), agent: app.agent, result });
+
+/* при вход от непознат IP адрес потребителят получава писмо (помнят се последните 20 адреса) */
+async function knownIp(app, u) {
+  if (!app.ip) return;
+  const key = 'ips:' + u.username;
+  let list = [];
+  try { list = JSON.parse((await app.kv.get(key)) || '[]'); } catch (_) { list = []; }
+  if (list.includes(app.ip)) return;
+  if (list.length && u.email) {
+    await mail(app, u.email, app.cfg.appName + ' – вход от нов IP адрес', 'Влязохте в системата като ' + u.username + ' от IP адрес ' + app.ip + (app.geo ? ' (' + app.geo + ')' : '') + ', от който не сте влизали досега.\n' +
+      'Браузър: ' + (app.agent || '—') + '\nВреме: ' + stamp().replace('T', ' ').slice(0, 16) + '\n\nАко не сте вие, сменете паролата си веднага и уведомете администратора. Активните сесии се виждат в „Моите входове“.');
+  }
+  await app.kv.put(key, JSON.stringify([app.ip].concat(list).slice(0, 20)));
+}
 
 export async function login(d, ctx, app) {
   const username = str(d.username, 40).toLowerCase(), preHash = str(d.hash, 64);
@@ -157,6 +189,8 @@ export async function openSession(app, u, how) {
   await audit(app, u.username, how ? 'Вход с ' + how : 'Вход', '', app.ip);
   const token = randomToken(), exp = Date.now() + sessionMinOf(u) * 6e4;
   await saveSession(app, token, { u: u.username, exp });
+  await indexSession(app, u.username, await sha256(token), how);
+  try { await knownIp(app, u); } catch (e) { console.error('knownIp: ' + e.message); }
   return { __cookie: token, session: exp, me: meInfo(u) };
 }
 
@@ -164,6 +198,62 @@ export async function openSession(app, u, how) {
 
 async function saveSession(app, token, s) {
   await app.kv.put('s:' + (await sha256(token)), JSON.stringify(s), { expirationTtl: Math.max(60, Math.ceil((s.exp - Date.now()) / 1000) + 60) });
+}
+
+/* активните сесии на потребителя: списък в KV (без ключовете – само хешовете им) */
+const sessKey = username => 'ss:' + username;
+async function sessIndex(app, username) {
+  try { const a = JSON.parse((await app.kv.get(sessKey(username))) || '[]'); return Array.isArray(a) ? a : []; } catch (_) { return []; }
+}
+async function indexSession(app, username, h, how) {
+  const list = (await sessIndex(app, username)).slice(0, 19);
+  list.unshift({ h, ip: app.ip, geo: app.geo || '', agent: app.agent, at: stamp(), how: how || 'парола' });
+  await app.kv.put(sessKey(username), JSON.stringify(list), { expirationTtl: 30 * 86400 });
+}
+/* само сесиите, които още важат */
+async function liveSessions(app, username) {
+  const all = await sessIndex(app, username), live = [];
+  for (const x of all) {
+    const raw = await app.kv.get('s:' + x.h);
+    if (raw && JSON.parse(raw).exp >= Date.now()) live.push(x);
+  }
+  if (live.length !== all.length) await app.kv.put(sessKey(username), JSON.stringify(live), { expirationTtl: 30 * 86400 });
+  return live;
+}
+/* прекратява всички сесии на потребителя (при спиране на достъпа); except – хеш на сесия, която остава */
+export async function endSessions(app, username, except) {
+  const list = await sessIndex(app, username);
+  for (const x of list) if (x.h !== except) await app.kv.delete('s:' + x.h);
+  await app.kv.put(sessKey(username), JSON.stringify(list.filter(x => x.h === except)), { expirationTtl: 30 * 86400 });
+  return list.filter(x => x.h !== except).length;
+}
+
+/* чужди сесии вижда и прекратява администратор с право „Управлява потребителите“ */
+const sessUser = (d, ctx) => {
+  const u = str(d.username, 40).toLowerCase();
+  if (u && u !== ctx.username && !ctx.perms.users) fail('role', 'Нямате право за това действие.');
+  return u || ctx.username;
+};
+
+export async function sessionsList(d, ctx, app) {
+  const username = sessUser(d, ctx), cur = await sha256(ctx.token);
+  return { sessions: (await liveSessions(app, username)).map(x => ({ id: x.h.slice(0, 16), ip: x.ip, geo: x.geo, agent: x.agent, at: x.at, how: x.how, current: x.h === cur })) };
+}
+
+export async function sessionsEnd(d, ctx, app) {
+  const username = sessUser(d, ctx), cur = await sha256(ctx.token), id = str(d.id, 16);
+  if (d.all === true) {
+    const n = await endSessions(app, username, username === ctx.username ? cur : '');
+    await audit(app, ctx.username, 'Прекратени сесии', username, n + ' бр.');
+    return { ended: n };
+  }
+  const x = (await sessIndex(app, username)).find(s => s.h.slice(0, 16) === id);
+  if (!x) fail('notfound', 'Сесията не е намерена или вече е изтекла.');
+  if (x.h === cur) fail('value', 'Това е текущата ви сесия – използвайте „Изход“.');
+  await app.kv.delete('s:' + x.h);
+  await app.kv.put(sessKey(username), JSON.stringify((await sessIndex(app, username)).filter(s => s.h !== x.h)), { expirationTtl: 30 * 86400 });
+  await audit(app, ctx.username, 'Прекратена сесия', username, (x.ip || '') + ' · ' + (x.agent || '').slice(0, 80));
+  return { ended: 1 };
 }
 
 export function cookieToken(req) {
@@ -214,7 +304,9 @@ export async function me(d, ctx, app) {
 }
 
 export async function logout(d, ctx, app) {
-  await app.kv.delete('s:' + (await sha256(ctx.token)));
+  const h = await sha256(ctx.token);
+  await app.kv.delete('s:' + h);
+  await app.kv.put(sessKey(ctx.username), JSON.stringify((await sessIndex(app, ctx.username)).filter(s => s.h !== h)), { expirationTtl: 30 * 86400 });
   await audit(app, ctx.username, 'Изход', '', '');
   return { __cookie: '' };
 }

@@ -4,10 +4,10 @@
  * администраторът може да назначи първия (и себе си).
  */
 
-import { CFG, ROLE_SUPER, ROLES, PERMS, isAdminRole, sessionMinOf } from './config.js';
+import { CFG, ROLE_SUPER, ROLE_VIEW, ROLES, PERMS, PERM_GROUPS, ADMIN_PERMS, VIEW_PERMS, ROLE_PERMS, isAdminRole, sessionMinOf } from './config.js';
 import { fail, str, line, stamp, isEmail, oneOf, view, byDesc } from './util.js';
 import { audit, mail } from './core.js';
-import { USER_RE, newInvite, inviteLink, accessMail, dropUser, findUser, permsOf, notifyOf, accessOf } from './auth.js';
+import { USER_RE, newInvite, inviteLink, accessMail, dropUser, findUser, permsOf, storedPerms, notifyOf, accessOf, endSessions } from './auth.js';
 import { allPersons, setUserAccess, DEFAULT_CODE } from './persons.js';
 
 const userView = u => Object.assign(view(u), {
@@ -15,13 +15,40 @@ const userView = u => Object.assign(view(u), {
   access: accessOf(u) || [DEFAULT_CODE], sessionMin: sessionMinOf(u)
 });
 
+/*
+ * Кой кого управлява:
+ *  – суперадминистраторът – всички, включително правата на администраторите;
+ *  – администраторът с право „Управлява потребителите“ – служителите и наблюдателите; роли и права им задава
+ *    само с право „Задава роли и права“ и само от правата, които има самият той;
+ *  – докато няма суперадминистратор, администраторите се управляват от администратор (за първоначалната настройка).
+ */
+const noSuperIn = users => !users.some(u => u.role === ROLE_SUPER && u.active === 'Да');
+const managesAdmins = (ctx, users) => !!ctx.super || noSuperIn(users);
+const canEditUser = (ctx, users, u) => !isAdminRole(u.role) || managesAdmins(ctx, users);
+const grantable = ctx => (ctx.super ? PERMS : PERMS.filter(k => ctx.perms[k]));
+
 export async function usersList(d, ctx, app) {
   const [users, departments] = await Promise.all([app.store.list('users'), app.store.list('departments')]);
   const persons = (await allPersons(app)).map(p => ({ code: p.code, name: p.name, active: p.active }));
-  const noSuper = !users.some(u => u.role === ROLE_SUPER && u.active === 'Да');
-  // ролята „Суперадминистратор“ се дава от суперадминистратор (или от администратор, докато няма такъв)
-  const roles = ctx.super || noSuper ? ROLES : ROLES.filter(r => r !== ROLE_SUPER);
-  return { users: users.map(userView), departments: departments.filter(x => x.active === 'Да').map(view), perms: PERMS, roles, persons, canAccess: !!ctx.super, noSuper };
+  const noSuper = noSuperIn(users), admins = managesAdmins(ctx, users);
+  // ролята „Суперадминистратор“ се дава от суперадминистратор (или от администратор, докато няма такъв), а „Администратор“ – от който управлява администраторите
+  const roles = ROLES.filter(r => (r === ROLE_SUPER ? ctx.super || noSuper : isAdminRole(r) ? admins : true));
+  return {
+    users: users.map(u => Object.assign(userView(u), { canEdit: canEditUser(ctx, users, u), canPerms: canEditUser(ctx, users, u) && !!ctx.perms.usersPerms && (u.username !== ctx.username || !!ctx.super) && u.role !== ROLE_SUPER })),
+    departments: departments.filter(x => x.active === 'Да').map(view),
+    perms: PERMS, permGroups: PERM_GROUPS, adminPerms: ADMIN_PERMS, viewPerms: VIEW_PERMS, rolePerms: ROLE_PERMS, grantable: grantable(ctx),
+    roles, persons, canAccess: !!ctx.super, noSuper, canPerms: !!ctx.perms.usersPerms, managesAdmins: admins
+  };
+}
+
+/*
+ * Отговорник: без право „Разпределя преписки“ потребителят може само да назначи на себе си преписка, която още няма
+ * отговорник. Веднъж определен, отговорникът се сменя само от администратор с това право.
+ */
+export function assignCheck(ctx, current, owner) {
+  if (ctx.perms.assign || owner === current) return;
+  if (current) fail('role', 'Отговорникът вече е определен – сменя го само администратор.');
+  if (owner !== ctx.username) fail('role', 'Можете да назначите преписката само на себе си. На друг потребител я разпределя администратор.');
 }
 
 /* активните потребители за избор на отговорник – без лични данни */
@@ -38,14 +65,25 @@ export async function usersSave(d, ctx, app) {
   };
   if (!v.name) fail('required', 'Посочете име.');
   if (!isEmail(v.email)) fail('email', 'Невалиден имейл: на него идват връзките за парола.');
-  if (Array.isArray(d.perms)) v.perms = JSON.stringify(d.perms.filter(p => PERMS.includes(p)));
-  else if (d.perms === null) v.perms = '';
   if (v.department && !(await app.store.list('departments')).some(x => x.active === 'Да' && x.name === v.department)) fail('value', 'Изберете отдел от списъка.');
   const users = await app.store.list('users');
   const cur = users.find(u => u.username === username);
   if (d.isNew && cur) fail('duplicate', 'Вече има такъв потребител.');
   if (!d.isNew && !cur) fail('notfound', 'Потребителят не е намерен.');
   const supers = users.filter(u => u.role === ROLE_SUPER && u.active === 'Да'), noSuper = !supers.length;
+  if ((cur && !canEditUser(ctx, users, cur)) || (isAdminRole(v.role) && !managesAdmins(ctx, users))) fail('role', 'Администраторите и техните права се управляват от суперадминистратор.');
+  // роля и права: с право „Задава роли и права“; без него – само нов потребител с правата по подразбиране за ролята
+  const wantPerms = Array.isArray(d.perms) ? [...new Set(d.perms.map(String))].filter(p => PERMS.includes(p)) : d.perms === null ? null : undefined;
+  const roleChanged = cur ? v.role !== cur.role : false;
+  const curPerms = cur ? storedPerms(cur) : null;
+  const permsChanged = wantPerms !== undefined && JSON.stringify(wantPerms && wantPerms.slice().sort()) !== JSON.stringify(curPerms && curPerms.slice().sort());
+  if ((roleChanged || (permsChanged && (cur || wantPerms))) && !ctx.perms.usersPerms) fail('role', 'Нямате право да задавате роли и права.');
+  if (permsChanged && username === ctx.username && !ctx.super) fail('role', 'Не можете да променяте собствените си права.');
+  if (wantPerms && permsChanged) {
+    const own = grantable(ctx), extra = wantPerms.filter(p => !own.includes(p) && !(curPerms || []).includes(p));
+    if (extra.length) fail('role', 'Не можете да дадете права, които нямате: ' + extra.join(', ') + '.');
+    v.perms = JSON.stringify({ v: 2, p: wantPerms });
+  } else if (wantPerms === null && permsChanged) v.perms = '';
   if (v.role === ROLE_SUPER && (!cur || cur.role !== ROLE_SUPER) && !ctx.super && !noSuper) fail('role', 'Роля „Суперадминистратор“ се дава само от суперадминистратор.');
   if (cur && cur.role === ROLE_SUPER && !ctx.super) fail('role', 'Суперадминистратор се променя само от суперадминистратор.');
   if (username === ctx.username && (v.active !== 'Да' || (cur && v.role !== cur.role && !(v.role === ROLE_SUPER && noSuper)))) fail('value', 'Не можете да отнемете собствената си роля или достъп.');
@@ -65,6 +103,7 @@ export async function usersSave(d, ctx, app) {
     }
     await app.store.patch('users', cur._id, v);
     await dropUser(app, username);
+    if (v.active !== 'Да' && cur.active === 'Да') await endSessions(app, username);
     await audit(app, ctx.username, 'Промяна на потребител', username, changed.join(', '));
     return { username };
   }
@@ -120,7 +159,8 @@ export async function logList(d, ctx, app) {
 
 export async function loginsList(d, ctx, app) {
   const user = str(d.username, 40).toLowerCase();
-  // всеки вижда своите входове; администраторът – всички
-  const rows = (await app.store.list('logins')).filter(r => ctx.admin ? (!user || r.username === user) : r.username === ctx.username);
-  return { logins: rows.sort(byDesc('at')).slice(0, 500).map(view) };
+  // всеки вижда своите входове; с право „Вижда входовете“ – на всички
+  const all = !!ctx.perms.logins;
+  const rows = (await app.store.list('logins')).filter(r => all ? (!user || r.username === user) : r.username === ctx.username);
+  return { logins: rows.sort(byDesc('at')).slice(0, 2000).map(view), all };
 }

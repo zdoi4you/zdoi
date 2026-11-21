@@ -24,7 +24,7 @@ import * as persons from './persons.js';
 import { ROLE_SUPER, isAdminRole } from './config.js';
 import { SCHEMA_VER } from './schema.js';
 
-/* auth: public | user | admin | super; perm: нужно право; */
+/* auth: public | user | admin | super; perm: нужно право (или списък – всички са нужни) */
 export const ACTIONS = {
   login: { auth: 'public', fn: auth.login },
   'login.code': { auth: 'public', fn: auth.loginCode },
@@ -33,8 +33,8 @@ export const ACTIONS = {
   'link.check': { auth: 'public', fn: auth.linkCheck },
   'oauth.providers': { auth: 'public', fn: oauth.providersList },
   'oauth.unlink': { auth: 'user', fn: oauth.oauthUnlink },
-  'oauth.settings': { auth: 'admin', fn: async (d, ctx, app) => ({ providers: await oauth.oauthSystem(app) }) },
-  'oauth.save': { auth: 'admin', fn: oauth.oauthSystemSave },
+  'oauth.settings': { auth: 'admin', perm: 'system', fn: async (d, ctx, app) => ({ providers: await oauth.oauthSystem(app) }) },
+  'oauth.save': { auth: 'admin', perm: 'system', fn: oauth.oauthSystemSave },
 
   me: { auth: 'user', fn: auth.me },
   logout: { auth: 'user', fn: auth.logout },
@@ -43,16 +43,20 @@ export const ACTIONS = {
   'twofa.confirm': { auth: 'user', fn: auth.twofaConfirm },
   'notify.save': { auth: 'user', fn: auth.notifySave },
   'session.save': { auth: 'user', fn: auth.sessionSave },
+  'sessions.list': { auth: 'user', fn: auth.sessionsList },
+  'sessions.end': { auth: 'user', fn: auth.sessionsEnd },
+  'profile.person': { auth: 'user', fn: persons.defaultPersonSave },
+  calendar: { auth: 'user', fn: cases.calendar },
 
   bootstrap: { auth: 'user', fn: cases.bootstrap },
   dashboard: { auth: 'user', fn: cases.dashboard },
-  'case.list': { auth: 'user', fn: cases.caseList },
-  'case.get': { auth: 'user', fn: cases.caseGet },
-  'case.create': { auth: 'user', perm: 'casesEdit', fn: cases.caseCreate },
-  'case.update': { auth: 'user', perm: 'casesEdit', fn: cases.caseUpdate },
-  'case.assign': { auth: 'user', perm: 'casesEdit', fn: cases.caseAssign },
-  'case.lock': { auth: 'user', perm: 'casesEdit', fn: cases.caseLock },
-  'case.comment': { auth: 'user', perm: 'casesEdit', fn: cases.caseComment },
+  'case.list': { auth: 'user', perm: 'inReg', fn: cases.caseList },
+  'case.get': { auth: 'user', perm: 'inReg', fn: cases.caseGet },
+  'case.create': { auth: 'user', perm: ['inReg', 'inRegEdit'], fn: cases.caseCreate },
+  'case.update': { auth: 'user', perm: ['inReg', 'inRegEdit'], fn: cases.caseUpdate },
+  'case.assign': { auth: 'user', perm: ['inReg', 'inRegEdit'], fn: cases.caseAssign },
+  'case.lock': { auth: 'user', perm: ['inReg', 'inRegEdit', 'lock'], fn: cases.caseLock },
+  'case.comment': { auth: 'user', perm: ['inReg', 'comment'], fn: cases.caseComment },
   'court.list': { auth: 'user', fn: cases.courtList },
   'court.save': { auth: 'user', perm: 'courts', fn: cases.courtSave },
   'court.delete': { auth: 'user', perm: 'courts', fn: cases.courtDelete },
@@ -65,16 +69,16 @@ export const ACTIONS = {
   'logins.list': { auth: 'user', fn: users.loginsList },
 
   'req.list': { auth: 'user', fn: reqs.reqList },
-  'register.list': { auth: 'user', fn: reqs.registerList },
+  'register.list': { auth: 'user', perm: 'outReg', fn: reqs.registerList },
   'req.get': { auth: 'user', fn: reqs.reqGet },
-  'req.create': { auth: 'user', perm: 'casesEdit', fn: reqs.reqCreate },
-  'req.update': { auth: 'user', perm: 'casesEdit', fn: reqs.reqUpdate },
-  'req.assign': { auth: 'user', perm: 'casesEdit', fn: reqs.reqAssign },
-  'req.retag': { auth: 'user', perm: 'casesEdit', fn: reqs.reqRetag },
-  'req.lock': { auth: 'user', perm: 'casesEdit', fn: reqs.reqLock },
-  'req.comment': { auth: 'user', perm: 'casesEdit', fn: reqs.reqComment },
-  'doc.reserve': { auth: 'user', perm: 'casesEdit', fn: reqs.docReserve },
-  'doc.file': { auth: 'user', perm: 'casesEdit', big: true, fn: reqs.docFile },
+  'req.create': { auth: 'user', perm: 'reqCreate', fn: reqs.reqCreate },
+  'req.update': { auth: 'user', perm: 'reqEdit', fn: reqs.reqUpdate },
+  'req.assign': { auth: 'user', fn: reqs.reqAssign },
+  'req.retag': { auth: 'user', perm: 'reqEdit', fn: reqs.reqRetag },
+  'req.lock': { auth: 'user', perm: 'lock', fn: reqs.reqLock },
+  'req.comment': { auth: 'user', perm: 'comment', fn: reqs.reqComment },
+  'doc.reserve': { auth: 'user', perm: 'docs', fn: reqs.docReserve },
+  'doc.file': { auth: 'user', perm: 'docs', big: true, fn: reqs.docFile },
   'doc.download': { auth: 'user', fn: reqs.docDownload },
   'kep.challenge': { auth: 'public', fn: kep.kepChallenge },
   'kep.login': { auth: 'public', fn: kep.kepLogin },
@@ -83,20 +87,20 @@ export const ACTIONS = {
   'kep.verify': { auth: 'user', big: true, fn: kep.kepVerify },
   'kep.checkCert': { auth: 'user', fn: kep.kepCheckCert },
   'kep.testAuthorize': { auth: 'user', fn: kep.kepTestAuthorize },
-  'kep.authorize': { auth: 'user', perm: 'casesEdit', fn: kep.kepAuthorize },
-  'kep.complete': { auth: 'user', perm: 'casesEdit', big: true, fn: kep.kepComplete },
-  'kep.status': { auth: 'admin', fn: kep.kepStatus },
-  'kep.renew': { auth: 'admin', fn: kep.kepRenew },
-  'mail.send': { auth: 'user', perm: 'casesEdit', fn: reqs.mailSend },
-  'mail.cancel': { auth: 'user', perm: 'casesEdit', fn: reqs.mailCancel },
-  'mail.record': { auth: 'user', perm: 'casesEdit', big: true, fn: reqs.mailRecord },
-  'mail.inbox': { auth: 'user', fn: reqs.mailInbox },
-  'mail.assign': { auth: 'user', perm: 'casesEdit', fn: reqs.mailAssign },
+  'kep.authorize': { auth: 'user', perm: 'sign', fn: kep.kepAuthorize },
+  'kep.complete': { auth: 'user', perm: 'sign', big: true, fn: kep.kepComplete },
+  'kep.status': { auth: 'admin', perm: 'system', fn: kep.kepStatus },
+  'kep.renew': { auth: 'admin', perm: 'system', fn: kep.kepRenew },
+  'mail.send': { auth: 'user', perm: 'mailSend', fn: reqs.mailSend },
+  'mail.cancel': { auth: 'user', perm: 'mailSend', fn: reqs.mailCancel },
+  'mail.record': { auth: 'user', perm: 'mailRecord', big: true, fn: reqs.mailRecord },
+  'mail.inbox': { auth: 'user', perm: 'mailbox', fn: reqs.mailInbox },
+  'mail.assign': { auth: 'user', perm: 'mailbox', fn: reqs.mailAssign },
   'mail.attachment': { auth: 'user', fn: reqs.mailAttachment },
-  'system.get': { auth: 'admin', fn: reqs.systemGet },
-  'system.save': { auth: 'admin', fn: reqs.systemSave },
-  'system.poll': { auth: 'admin', fn: reqs.systemPoll },
-  'system.schema': { auth: 'admin', fn: async (d, ctx, app) => {
+  'system.get': { auth: 'admin', perm: 'system', fn: reqs.systemGet },
+  'system.save': { auth: 'admin', perm: 'system', fn: reqs.systemSave },
+  'system.poll': { auth: 'admin', perm: 'system', fn: reqs.systemPoll },
+  'system.schema': { auth: 'admin', perm: 'system', fn: async (d, ctx, app) => {
     let r;
     try { r = await app.store.ensureSchema(); } catch (e) {
       if (e.status === 403) fail('role', 'Приложението може да пише в списъците, но не и да добавя колони (нужно е ниво „manage“ за сайта). Изпълнете „node tools/sp-provision.js“ с администраторски акаунт.');
@@ -106,9 +110,9 @@ export const ACTIONS = {
     return { created: r.created || [] };
   } },
 
-  'users.list': { auth: 'admin', fn: users.usersList },
-  'users.save': { auth: 'admin', fn: users.usersSave },
-  'users.invite': { auth: 'admin', fn: users.usersInvite },
+  'users.list': { auth: 'admin', perm: 'users', fn: users.usersList },
+  'users.save': { auth: 'admin', perm: 'users', fn: users.usersSave },
+  'users.invite': { auth: 'admin', perm: 'users', fn: users.usersInvite },
 
   'persons.list': { auth: 'super', fn: persons.personsList },
   'persons.save': { auth: 'super', fn: persons.personsSave }
@@ -160,7 +164,7 @@ export async function dispatch(app, req, body) {
   const a = ACTIONS[name];
   const data = body.data && typeof body.data === 'object' ? body.data : {};
   const ctx = a.auth === 'public' ? null : await auth.authenticate(app, auth.cookieToken(req), a.auth);
-  if (a.perm && !ctx.perms[a.perm]) fail('role', 'Нямате право за това действие.');
+  if (a.perm && ![].concat(a.perm).every(p => ctx.perms[p])) fail('role', 'Нямате право за това действие.');
   const result = (await a.fn(data, ctx, app)) || {};
   return { ctx, result };
 }

@@ -28,14 +28,54 @@ export const isAdminRole = role => ADMIN_ROLES.includes(role);
 export const SESSION_CHOICES = [30, 45, 60, 90, 120, 150, 180];
 export const sessionMinOf = u => { const n = Number(u && u.sessionMin); return SESSION_CHOICES.includes(n) ? n : CFG.SESSION_MIN; };
 
-/* права; управлението на потребители е само за администраторите и не се отнема */
-export const PERMS = ['casesAll', 'casesEdit', 'courts', 'addressees', 'departments', 'log'];
+/*
+ * Права по операции. Групата „Администрация“ важи само за администратори; тези права им ги дава суперадминистраторът.
+ * Суперадминистраторът има всички права. Наблюдателят има само правата за преглед.
+ */
+export const PERM_GROUPS = [
+  ['Заявления до институции', [
+    ['casesAll', 'Вижда всички преписки на достъпните лица (иначе – само своите)'],
+    ['reqCreate', 'Въвежда нови заявления'],
+    ['reqEdit', 'Променя искането, хода, сроковете и адреса за отговор'],
+    ['docs', 'Изготвя документи (заявление, уточнение, писмо, PDF)'],
+    ['sign', 'Подписва документи с КЕП'],
+    ['mailSend', 'Изпраща и насрочва писма по имейл'],
+    ['mailRecord', 'Отбелязва изпратено и регистрира получено (ССЕВ, поща, на ръка)'],
+    ['mailbox', 'Вижда неразпределената поща и я разпределя'],
+    ['comment', 'Пише вътрешни коментари'],
+    ['lock', 'Заключва своите преписки'],
+    ['outReg', 'Вижда изходящия регистър']
+  ]],
+  ['Входящ регистър', [
+    ['inReg', 'Вижда входящия регистър'],
+    ['inRegEdit', 'Въвежда и променя входящи заявления']
+  ]],
+  ['Справочници', [
+    ['courts', 'Води съдебни дела'],
+    ['addressees', 'Въвежда и променя адресати']
+  ]],
+  ['Администрация', [
+    ['assign', 'Разпределя преписки на други и сменя отговорника'],
+    ['users', 'Управлява потребителите (добавя, спира, връзки за парола, сесии)'],
+    ['usersPerms', 'Задава роли и права на служителите и наблюдателите'],
+    ['logins', 'Вижда входовете и IP адресите на всички'],
+    ['log', 'Вижда дневника на действията'],
+    ['departments', 'Управлява отделите'],
+    ['system', 'Системни настройки (поща, вход, КЕП, номерация)']
+  ]]
+];
+export const PERMS = PERM_GROUPS.flatMap(([, list]) => list.map(([k]) => k));
+export const ADMIN_PERMS = PERM_GROUPS.find(([g]) => g === 'Администрация')[1].map(([k]) => k);
+export const VIEW_PERMS = ['casesAll', 'outReg', 'inReg'];
+const WORK = PERMS.filter(k => !ADMIN_PERMS.includes(k));
 export const ROLE_PERMS = {
   [ROLE_SUPER]: PERMS,
   [ROLE_ADMIN]: PERMS,
-  [ROLE_STAFF]: ['casesAll', 'casesEdit', 'courts', 'addressees'],
-  [ROLE_VIEW]: ['casesAll']
+  [ROLE_STAFF]: WORK,
+  [ROLE_VIEW]: VIEW_PERMS
 };
+/* старите права (до 2026-11-22): „casesEdit“ включваше всички действия по преписките */
+export const LEGACY_PERMS = { casesEdit: ['reqCreate', 'reqEdit', 'docs', 'sign', 'mailSend', 'mailRecord', 'mailbox', 'comment', 'lock', 'inRegEdit'] };
 
 export function envCfg(env) {
   const appUrl = String(env.APP_URL || 'https://adm.zdoi.eu/').replace(/\/?$/, '/');

@@ -339,3 +339,58 @@ dialog { border-radius: 16px; box-shadow: var(--shadow-lg); padding: 22px 24px; 
 .when-box { border: 1px dashed var(--line); border-radius: 10px; padding: 12px; }
 .day-note { font-size: 12.5px; }
 .msg.sched { border-style: dashed; background: color-mix(in srgb, var(--warn-bg) 45%, transparent); }
+
+/* права по операции */
+.perm-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.perm-group { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 0; min-width: 0; }
+.perm-group legend { font-weight: 600; font-size: 13px; padding: 0 4px; display: inline-flex; align-items: center; gap: 4px; }
+.perm-group.admin { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn-bg) 35%, transparent); }
+.perm-list { display: grid; gap: 4px; }
+.check.perm { align-items: flex-start; font-size: 13.5px; }
+.check.perm.dim { opacity: .62; }
+.perm-mine { list-style: none; margin: 2px 0 8px; padding: 0; font-size: 13.5px; display: grid; gap: 2px; }
+.no-access { max-width: 520px; margin: 40px auto; text-align: center; align-items: center; }
+.no-access .na-ico { display: inline-flex; width: 56px; height: 56px; border-radius: 50%; align-items: center; justify-content: center; background: var(--bad-bg); color: var(--bad); }
+.no-access .na-ico .ico { width: 28px; height: 28px; }
+.owner-line { display: flex; align-items: center; gap: 8px; }
+.avatar.sm { width: 26px; height: 26px; font-size: 11px; }
+
+/* лице в профила */
+.person-pick { display: grid; gap: 8px; }
+.person-opt { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; cursor: pointer; }
+.person-opt input { width: auto; }
+.person-opt.on { border-color: var(--accent); background: var(--soft); }
+.person-opt.off { opacity: .7; }
+.person-opt b, .person-opt small { display: block; }
+
+/* календар */
+.cal-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.cal-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cal-head select { width: auto; }
+.cal-head .grow { flex: 1; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-wd { font-size: 12px; font-weight: 600; color: var(--muted); text-align: center; padding: 4px 0; }
+.cal-wd.off { color: var(--warn); }
+.cal-cell { min-height: 92px; border: 1px solid var(--line); border-radius: 8px; padding: 5px; display: flex; flex-direction: column; gap: 3px; cursor: pointer; background: var(--card); min-width: 0; overflow: hidden; }
+.cal-cell:hover { border-color: var(--accent); }
+.cal-cell.empty { border: 0; background: transparent; cursor: default; }
+.cal-cell.off { background: color-mix(in srgb, var(--warn-bg) 55%, var(--card)); }
+.cal-cell.today .cal-num b { background: var(--accent); color: var(--accent-ink); border-radius: 999px; padding: 0 7px; }
+.cal-cell.sel { outline: 2px solid var(--accent); outline-offset: -1px; }
+.cal-num { display: flex; justify-content: space-between; gap: 4px; font-size: 13px; align-items: baseline; }
+.cal-hol { font-size: 10.5px; color: var(--warn); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-ev { display: block; font-size: 11px; line-height: 1.35; padding: 1px 5px; border-radius: 5px; background: var(--gray-bg); color: var(--ink); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-ev.bad { background: var(--bad-bg); color: var(--bad); }
+.cal-ev.warn { background: var(--warn-bg); color: var(--warn); }
+.cal-ev.info { background: var(--soft); color: var(--soft-ink); }
+.cal-legend { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.cal-legend .cal-ev { display: inline-block; }
+.cal-key.off { display: inline-block; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--warn-bg) 55%, var(--card)); border: 1px solid var(--line); }
+.cal-list li { align-items: flex-start; }
+@media (max-width: 900px) {
+  .cal-wrap { grid-template-columns: 1fr; }
+  .cal-cell { min-height: 58px; }
+  .cal-ev { font-size: 0; height: 6px; padding: 0; }
+  .cal-hol { display: none; }
+}
+.list-plain li > .pill { align-self: center; }

@@ -9,8 +9,11 @@ import { sha256 } from './crypto.js';
 export function makeApp(env, store, kv, req) {
   const h = req ? req.headers : new Headers();
   const ip = cleanIp(h.get('CF-Connecting-IP') || '');
+  // приблизително място по IP адреса (от Cloudflare) – за дневника на входовете
+  const cf = (req && req.cf) || {};
+  const geo = [cf.city, cf.country].map(x => line(x, 60)).filter(Boolean).join(', ');
   return {
-    env, store, kv, ip,
+    env, store, kv, ip, geo,
     cfg: envCfg(env),
     agent: line(h.get('User-Agent'), 200),
     mailer: env.__mailer || null, // тестовете подменят пощата

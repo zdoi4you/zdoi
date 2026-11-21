@@ -123,6 +123,17 @@ export async function personsFor(app, ctx) {
   return (await allPersons(app)).filter(p => codes.includes(p.code));
 }
 
+/* лицето, с което потребителят отваря системата (избира се в „Моят профил“); празно – избор при всяко отваряне */
+export const defaultPersonOf = async (app, username) => (await setting(app, 'uperson:' + username, '')) || '';
+
+export async function defaultPersonSave(d, ctx, app) {
+  const code = line(d.code, 10);
+  if (code && !(await allowedCodes(app, ctx)).includes(code)) fail('role', 'Нямате достъп до това лице.');
+  await setSetting(app, 'uperson:' + ctx.username, code);
+  await audit(app, ctx.username, 'Основно лице', '', code || 'избор при отваряне');
+  return { defaultPerson: code };
+}
+
 /* ---------- управление (суперадминистратор) ---------- */
 
 const userAccess = u => (u.role === ROLE_SUPER ? '*' : accessOf(u) || [DEFAULT_CODE]);

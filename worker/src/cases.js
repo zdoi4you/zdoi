@@ -6,10 +6,11 @@ import { fail, str, line, stamp, todayIso, isoDate, oneOf, intIn, isEmail, valid
 import { term, termMonths, daysBetween } from './calendar.js';
 import { audit, mail, insertUnique } from './core.js';
 import { SCHEMA } from './schema.js';
+import { PERM_GROUPS } from './config.js';
 import { notifyOf, permsOf } from './auth.js';
-import { usersBrief } from './users.js';
-import { reqLists, reqDashboard, orgProfile, REG_BASIS, reqScope } from './requests.js';
-import { personsFor } from './persons.js';
+import { usersBrief, assignCheck } from './users.js';
+import { reqLists, reqDashboard, orgProfile, REG_BASIS, reqScope, withReqDue, SCHEDULED } from './requests.js';
+import { personsFor, codeOf, defaultPersonOf, DEFAULT_CODE } from './persons.js';
 import { mailboxAddress } from './mailbox.js';
 
 export const CASE_STATUS = ['Нова', 'В обработка', 'Чака уточняване', 'Чака трето лице', 'Решение издадено', 'Приключена'];
@@ -62,8 +63,8 @@ export function withDue(c, today) {
   return o;
 }
 
-/* без право „всички преписки“ потребителят вижда само възложените на него и въведените от него */
-const canSee = (c, ctx) => !!ctx.perms.casesAll || c.owner === ctx.username || c.createdBy === ctx.username;
+/* входящият регистър се вижда с право „Вижда входящия регистър“; без „всички преписки“ – само възложените и въведените от потребителя */
+const canSee = (c, ctx) => !!ctx.perms.inReg && (!!ctx.perms.casesAll || c.owner === ctx.username || c.createdBy === ctx.username);
 
 async function findCase(app, regNo, ctx) {
   const c = (await app.store.list('cases', { regNo: line(regNo, 60) }))[0];
@@ -85,7 +86,11 @@ export async function bootstrap(d, ctx, app) {
     users, departments: departments.filter(x => x.active === 'Да').map(x => x.name), lists: Object.assign(lists(), reqLists()),
     org: await orgProfile(app), mailbox: mailboxAddress(app.env), session: ctx.sessionExp, sessionMin: ctx.sessionMin,
     // лицата, от чието име потребителят може да води преписки (с данните за бланката)
-    persons: await personsFor(app, ctx)
+    persons: await personsFor(app, ctx),
+    // лицето, с което потребителят отваря системата (избира се в „Моят профил“)
+    defaultPerson: await defaultPersonOf(app, ctx.username),
+    // каталогът на правата – за надписите в интерфейса
+    permGroups: PERM_GROUPS
   };
 }
 
@@ -137,6 +142,7 @@ function caseFields(d) {
 export async function caseCreate(d, ctx, app) {
   const v = caseFields(d);
   v.owner = await checkOwner(app, line(d.owner, 40));
+  assignCheck(ctx, '', v.owner);
   let regNo = line(d.regNo, 60);
   const base = { createdAt: stamp(), createdBy: ctx.username, status: 'Нова', outcome: '', updatedAt: stamp() };
   let rec;
@@ -201,8 +207,7 @@ export async function caseAssign(d, ctx, app) {
   unlocked(c);
   const owner = await checkOwner(app, line(d.owner, 40));
   if (owner === c.owner) return { owner };
-  // без право „всички преписки“ потребителят може само да поеме преписката или да я предаде, ако е негова
-  if (!ctx.perms.casesAll && c.owner && c.owner !== ctx.username) fail('role', 'Само отговорникът или потребител с право „всички преписки“ сменя отговорника.');
+  assignCheck(ctx, c.owner || '', owner);
   await app.store.patch('cases', c._id, { owner, updatedAt: stamp() });
   await event(app, c.regNo, ctx.username, 'Отговорник', owner ? 'Отговорник: ' + owner : 'Без отговорник');
   await audit(app, ctx.username, 'Смяна на отговорник', c.regNo, owner || '—');
@@ -274,6 +279,39 @@ export async function dashboard(d, ctx, app) {
     appeals: cases.filter(c => c.appealDays !== null && c.appealDays >= 0 && c.appealDays <= 7).map(brief),
     hearings
   });
+}
+
+/* ---------- календар ---------- */
+
+/* срокове по заявленията и входящите преписки, заседания по делата и насрочени писма – за избраното лице */
+export async function calendar(d, ctx, app) {
+  const today = todayIso(), only = line(d.person, 10), see = await reqScope(app, ctx);
+  const events = [];
+  const add = (at, kind, ref, text, href, cls) => {
+    if (!/^\d{4}-\d{2}-\d{2}/.test(at || '')) return;
+    events.push({ date: at.slice(0, 10), time: at.length > 10 ? at.slice(11, 16) : '', kind, ref, text: text || '', href, cls: cls || '' });
+  };
+  const reqs = (await app.store.list('requests')).filter(r => see(r) && (!only || codeOf(r) === only)).map(r => withReqDue(r, today));
+  const reqHref = no => '#/request/' + encodeURIComponent(no);
+  reqs.forEach(r => {
+    if (r.due) add(r.due, r.ours ? 'Наш срок' : 'Срок за отговор от субекта', r.regNo, r.entityName, reqHref(r.regNo), r.daysLeft < 0 ? 'bad' : 'warn');
+    if (r.silentBy && r.daysLeft !== null && r.daysLeft < 0) add(r.silentBy, 'Обжалване на мълчалив отказ', r.regNo, r.entityName, reqHref(r.regNo), 'bad');
+    if (r.appealBy) add(r.appealBy, 'Обжалване на решението', r.regNo, r.entityName, reqHref(r.regNo), 'bad');
+  });
+  const visible = new Set(reqs.map(r => r.regNo));
+  if (ctx.perms.inReg && (!only || only === DEFAULT_CODE)) {
+    (await app.store.list('cases')).filter(c => canSee(c, ctx)).map(c => withDue(c, today)).forEach(c => {
+      visible.add(c.regNo);
+      const href = '#/case/' + encodeURIComponent(c.regNo);
+      if (c.due && CASE_OPEN.includes(c.status)) add(c.due, c.dueLabel || 'Срок за решение', c.regNo, c.applicantName, href, c.daysLeft < 0 ? 'bad' : 'warn');
+      if (c.appealBy) add(c.appealBy, 'Срок за обжалване (входящо)', c.regNo, c.applicantName, href, '');
+    });
+  }
+  (await app.store.list('courts')).filter(x => x.nextHearing && (visible.has(x.regNo) || (!x.regNo && ctx.perms.casesAll)))
+    .forEach(x => add(x.nextHearing, 'Съдебно заседание', String(x.court || '').replace('Административен съд – ', 'АС ') + ' № ' + x.caseNo + '/' + x.year, x.kind, '#/courts', 'info'));
+  (await app.store.list('mail', { direction: SCHEDULED })).filter(m => visible.has(m.regNo))
+    .forEach(m => add(m.at, 'Насрочено писмо', m.regNo, m.subject + ' → ' + m.to, reqHref(m.regNo), 'info'));
+  return { events: events.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)) };
 }
 
 /* ---------- съдебни дела ---------- */
