@@ -408,3 +408,6 @@ td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-n
 .dl-list li.done { opacity: .6; }
 .stack-r { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
 td .actions { flex-wrap: nowrap; }
+.seg { display: inline-flex; gap: 4px; }
+tr.canceled td { text-decoration: line-through; opacity: .65; }
+tr.canceled td:last-child, tr.canceled td:nth-child(4) { text-decoration: none; }

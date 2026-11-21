@@ -228,7 +228,39 @@ export function addressChangeDef(p) {
   return frame(p, content, 'Уведомление');
 }
 
-export const DEFS = { 'Заявление': applicationDef, 'Уточнение': clarificationDef, 'Писмо': letterDef, 'Промяна на адрес': addressChangeDef };
+/* ---------- документи за съда (жалби, молби, списък на разноските) ---------- */
+
+/*
+ * p: { org, outNo, date, docType, to, via, caseRef, heading, subheading, from, against, salutation, body, costs: [[вид, сума, документ]],
+ *      costsTotal, petitumIntro, petitum: [...], extra, attachments, mode, applicant, place, signMode, kep }
+ */
+export function courtDocDef(p) {
+  const addr = [{ text: 'ДО', bold: true }, { text: String(p.to || '').toUpperCase(), bold: true }];
+  if (p.via) addr.push({ text: 'ЧРЕЗ ' + String(p.via).toUpperCase(), bold: true, margin: [0, 4, 0, 0] });
+  if (p.caseRef) addr.push({ text: p.caseRef, margin: [0, 4, 0, 0] });
+  const costs = p.costs && p.costs.length ? [{ margin: [0, 4, 0, 10], table: { headerRows: 1, widths: [18, '*', 80, 120], body: [
+    ['№', 'Вид', 'Сума', 'Документ'].map(t => ({ text: t, bold: true, fontSize: 9.5 })),
+    ...p.costs.map((c, i) => [String(i + 1), c[0], { text: c[1], alignment: 'right' }, c[2] || '']).map(r => r.map(c => (typeof c === 'string' ? { text: c, fontSize: 9.5 } : Object.assign({ fontSize: 9.5 }, c)))),
+    [{ text: '', border: [false, false, false, false] }, { text: 'Общо', bold: true, fontSize: 9.5 }, { text: p.costsTotal || '', bold: true, alignment: 'right', fontSize: 9.5 }, { text: '', fontSize: 9.5 }]
+  ] }, layout: 'lightHorizontalLines' }] : [];
+  const content = [
+    ...letterhead(p.org), outLine(p),
+    { stack: addr, margin: [250, 0, 0, 14] },
+    ...title(p.heading || 'МОЛБА', p.subheading),
+    p.from ? P([{ text: 'от ' }, { text: p.from, bold: true }]) : null,
+    p.against ? P([{ text: 'срещу ' }, { text: p.against, bold: true }]) : null,
+    P(p.salutation || 'Уважаеми съдии,', { margin: [0, 8, 0, 6] }),
+    ...paras(p.body).map(t => P(t)),
+    ...costs,
+    p.petitum && p.petitum.length ? [{ text: p.petitumIntro || 'Поради изложеното МОЛЯ:', bold: true, margin: [0, 6, 0, 2] }, numbered(p.petitum)] : null,
+    ...paras(p.extra).map(t => P(t)),
+    ...attachmentsList(p),
+    signature(p)
+  ].flat().filter(Boolean);
+  return frame(p, content, p.heading || 'Документ');
+}
+
+export const DEFS = { 'Заявление': applicationDef, 'Уточнение': clarificationDef, 'Писмо': letterDef, 'Промяна на адрес': addressChangeDef, 'Съдебен документ': courtDocDef };
 
 /* ---------- досие на преписка (за съда и при връчвания) ---------- */
 

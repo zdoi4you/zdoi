@@ -63,6 +63,9 @@ export const ACTIONS = {
   'court.save': { auth: 'user', perm: 'courts', fn: courts.courtSave },
   'court.part': { auth: 'user', perm: 'courts', fn: courts.courtPart },
   'court.delete': { auth: 'user', perm: 'courts', fn: courts.courtDelete },
+  'court.assign': { auth: 'user', perm: 'courts', fn: courts.courtAssign },
+  'court.epep': { auth: 'user', perm: 'courts', fn: courts.courtEpep },
+  'court.epepRaw': { auth: 'user', fn: courts.courtEpepRaw },
   'addressee.list': { auth: 'user', fn: cases.addresseeList },
   'addressee.save': { auth: 'user', perm: 'addressees', fn: cases.addresseeSave },
   'addressee.delete': { auth: 'user', perm: 'addressees', fn: cases.addresseeDelete },
@@ -271,6 +274,8 @@ export default {
     // пощата на приемната – на всеки 5 минути; напомнянията – веднъж на ден след 8:00 ч.
     ctx.waitUntil(upgradeSchema(app).then(() => reqs.sendScheduled(app)).then(r => { if (r.due) console.log('насрочени писма', JSON.stringify(r)); }, e => console.error('насрочени писма: ' + e.message)).then(() => reqs.pollMail(app)).then(r => console.log('поща', JSON.stringify(r)))
       .then(() => cases.remindDeadlines(app)).then(r => console.log('напомняния', JSON.stringify(r)))
+      // делата в ЕПЕП – веднъж на ден след 7:00 ч., по няколко на пускане
+      .then(() => courts.epepDaily(app)).then(r => { if (r.checked || r.errors) console.log('ЕПЕП', JSON.stringify(r)); }, e => console.error('ЕПЕП: ' + e.message))
       .then(() => acme.ensureCert(app)).then(r => console.log('сертификат за КЕП', JSON.stringify(r))));
   }
 };

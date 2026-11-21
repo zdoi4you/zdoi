@@ -10,7 +10,9 @@ export function makeEnv() {
   const env = {
     APP_URL: ORIGIN + '/', PEPPER: 'p'.repeat(48), SETUP_KEY: 'setup-key-123',
     __store: new MemoryStore(), __kv: new MemoryKV(),
-    __mailer: async (to, subject, text) => { outbox.push({ to, subject, text }); }
+    __mailer: async (to, subject, text) => { outbox.push({ to, subject, text }); },
+    // ЕПЕП: без мрежа в тестовете – празни отговори, освен ако тестът подмени
+    __epep: async () => new Response(JSON.stringify({ data: [] }), { headers: { 'Content-Type': 'application/json' } })
   };
   return { env, outbox };
 }

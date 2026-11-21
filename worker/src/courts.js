@@ -11,9 +11,12 @@
 
 import { fail, str, line, stamp, todayIso, isoDate, oneOf, intIn, view, byDesc } from './util.js';
 import { term, termMonths, daysBetween } from './calendar.js';
-import { audit } from './core.js';
+import { audit, mail } from './core.js';
 import { canSee, findCase } from './cases.js';
 import { reqScope } from './requests.js';
+import { assignCheck, usersBrief } from './users.js';
+import { notifyOf } from './auth.js';
+import { epepSearch, epepFetch, gidOf, caseUrl } from './epep.js';
 
 const OBLASTS = ['Благоевград', 'Бургас', 'Варна', 'Велико Търново', 'Видин', 'Враца', 'Габрово', 'Добрич', 'Кърджали', 'Кюстендил', 'Ловеч', 'Монтана', 'Пазарджик', 'Перник', 'Плевен', 'Пловдив', 'Разград', 'Русе', 'Силистра', 'Сливен', 'Смолян', 'Стара Загора', 'Търговище', 'Хасково', 'Шумен', 'Ямбол'];
 /* подсказки за съда; може да се въведе и друг */
@@ -25,8 +28,19 @@ export const COURTS = [
   'Софийски районен съд', ...OBLASTS.map(o => 'Районен съд – ' + o)
 ];
 export const PROCEDURES = ['АПК', 'ГПК'];
-export const COURT_KIND = ['Жалба срещу решение', 'Жалба срещу мълчалив отказ', 'Касационна жалба', 'Частна жалба', 'Искане за отмяна (чл. 239 АПК)',
-  'Иск за обезщетение (чл. 203 АПК, ЗОДОВ)', 'Искова молба (ГПК)', 'Въззивна жалба (ГПК)', 'Касационна жалба (ГПК)', 'Изпълнение на съдебен акт', 'Друго'];
+/* делата по ЗДОИ – първите три; останалите са за свързани производства (частна жалба, отмяна, обезщетение, изпълнение) */
+export const ZDOI_KINDS = ['Жалба срещу решение', 'Жалба срещу мълчалив отказ', 'Жалба на трето лице срещу предоставяне на достъп'];
+export const COURT_KIND = ZDOI_KINDS.concat(['Касационна жалба', 'Частна жалба', 'Искане за отмяна (чл. 239 АПК)',
+  'Иск за обезщетение (чл. 203 АПК, ЗОДОВ)', 'Изпълнение на съдебен акт', 'Искова молба (ГПК)', 'Въззивна жалба (ГПК)', 'Касационна жалба (ГПК)', 'Друго']);
+/* за новите дела: само административните производства (ГПК се прилага субсидиарно по чл. 144 АПК) */
+export const COURT_KIND_NEW = COURT_KIND.filter(k => !/ГПК/.test(k));
+/* чл. 40, ал. 3 ЗДОИ: решението на административния съд по жалба по ЗДОИ е окончателно */
+export const ZDOI_FINAL = 'Окончателно (чл. 40, ал. 3 ЗДОИ)';
+/* ориентировъчни държавни такси (от 01.01.2026 в евро) – проверяват се по указанията на съда */
+export const FEE_PRESETS = [
+  ['Държавна такса – жалба (гражданин, ЕТ, ЮЛНЦ)', '5.11', 'Тарифа за държавните такси по ГПК, т. 2 (вр. чл. 151, т. 3 АПК)'],
+  ['Държавна такса – жалба (търговец, друго юридическо лице)', '25.56', 'Тарифа за държавните такси по ГПК, т. 2 (вр. чл. 151, т. 3 АПК)']
+];
 export const COURT_INSTANCE = ['Първа инстанция', 'Въззивна инстанция', 'Касационна инстанция'];
 const LEGACY_INSTANCE = { 'Административен съд': 'Първа инстанция', 'Върховен административен съд': 'Касационна инстанция' };
 export const COURT_STATUS = ['Образувано', 'Оставено без движение', 'Насрочено', 'Отложено', 'Спряно', 'Обявено за решаване', 'Решено', 'Прекратено', 'Обжалвано', 'Влязло в сила'];
@@ -56,7 +70,9 @@ export const REMEDIES = {
 export const NO_REMEDY = 'Не подлежи на обжалване';
 const remedyNames = [...new Set(Object.values(REMEDIES).flat().map(r => r[0]))];
 
-export const ACT_KINDS = ['Решение', 'Определение', 'Разпореждане', 'Протоколно определение', 'Тълкувателно решение'];
+export const ACT_KINDS = ['Решение', 'Определение', 'Разпореждане', 'Протоколно определение', 'Протокол', 'Изпълнителен лист', 'Тълкувателно решение', 'Друг акт'];
+/* резултати, след които органът дължи ново произнасяне */
+const RETURNED = ['Отменя и връща преписката на органа', 'Отменя обжалвания акт', 'Обявява нищожност', 'Уважава частично'];
 export const ACT_OUTCOMES = ['', 'Отменя обжалвания акт', 'Отменя и връща преписката на органа', 'Обявява нищожност', 'Отхвърля жалбата', 'Уважава частично',
   'Оставя в сила', 'Отменя решението на долната инстанция', 'Оставя без разглеждане', 'Прекратява производството', 'Оставя без движение', 'Насрочва', 'Спира', 'Присъжда разноски', 'Друго'];
 export const HEARING_KINDS = ['Открито заседание', 'Закрито заседание'];
@@ -69,12 +85,12 @@ export const FEE_KINDS = ['Държавна такса', 'Депозит за в
   'Юрисконсултско възнаграждение', 'Присъдени разноски', 'Глоба', 'Друго'];
 export const FEE_STATUS = ['Дължима', 'Платена', 'Присъдена в наша полза', 'Присъдена в наша тежест', 'Събрана', 'Възстановена'];
 export const PARTY_ROLES = ['Жалбоподател', 'Ответник', 'Заинтересована страна', 'Касатор', 'Ответник по касация', 'Ищец', 'Ответник по иска', 'Въззивник', 'Въззиваем',
-  'Трето лице-помагач', 'Прокуратура', 'Друго'];
+  'Трето лице-помагач', 'Прокуратура', 'Адвокат', 'Друго'];
 export const FORMATIONS = ['', 'Едноличен', 'Тричленен', 'Петчленен'];
 export const EPEP_ACCESS = ['', 'Няма', 'Поискан', 'Предоставен'];
 
 export const courtLists = () => ({
-  courts: COURTS, courtKinds: COURT_KIND, courtInstances: COURT_INSTANCE, courtStatuses: COURT_STATUS, procedures: PROCEDURES, remedies: REMEDIES, noRemedy: NO_REMEDY,
+  courts: COURTS, courtKinds: COURT_KIND, courtKindsNew: COURT_KIND_NEW, zdoiKinds: ZDOI_KINDS, zdoiFinal: ZDOI_FINAL, feePresets: FEE_PRESETS, courtInstances: COURT_INSTANCE, courtStatuses: COURT_STATUS, procedures: PROCEDURES, remedies: REMEDIES, noRemedy: NO_REMEDY,
   actKinds: ACT_KINDS, actOutcomes: ACT_OUTCOMES, hearingKinds: HEARING_KINDS, hearingResults: HEARING_RESULTS, filingKinds: FILING_KINDS, filingDir: FILING_DIR,
   filingVia: FILING_VIA, feeKinds: FEE_KINDS, feeStatus: FEE_STATUS, partyRoles: PARTY_ROLES, formations: FORMATIONS, epepAccess: EPEP_ACCESS
 });
@@ -92,8 +108,10 @@ export function detailsOf(x) {
   o.panel = o.panel && typeof o.panel === 'object' ? o.panel : {};
   o.epep = o.epep && typeof o.epep === 'object' ? o.epep : {};
   o.procedure = PROCEDURES.includes(o.procedure) ? o.procedure : 'АПК';
+  o.owner = typeof o.owner === 'string' ? o.owner : '';
   return o;
 }
+const isZdoi = (x, det) => ZDOI_KINDS.includes(x.kind) && (det.procedure || 'АПК') === 'АПК';
 
 function remedyOf(procedure, name) {
   return (REMEDIES[procedure] || []).find(r => r[0] === name) || Object.values(REMEDIES).flat().find(r => r[0] === name) || null;
@@ -111,9 +129,18 @@ export function courtDeadlines(x, det, today = todayIso()) {
   const out = [];
   const add = (date, kind, label, done, extra) => { if (date) out.push(Object.assign({ date, kind, label, done: !!done, daysLeft: daysBetween(today, date) }, extra || {})); };
   det.acts.forEach(a => {
-    if (!a.remedy || a.remedy === NO_REMEDY) return;
+    // отменен отказ: органът дължи ново решение – ориентировъчно 14 дни от влизането в сила (чл. 28, ал. 1 ЗДОИ, указанията на съда по чл. 173, ал. 2 АПК)
+    if (a.kind === 'Решение' && RETURNED.includes(a.outcome) && a.finalOn && isZdoi(x, det)) {
+      add(term(a.finalOn, 14), 'Изпълнение', 'Органът трябва да се произнесе отново по заявлението (чл. 28, ал. 1 ЗДОИ вр. чл. 173, ал. 2 АПК); при бездействие – чл. 304 АПК', !!det.executedOn, { actId: a.id });
+    }
+    if (!a.remedy || a.remedy === NO_REMEDY || a.remedy === ZDOI_FINAL) return;
     const r = a.due ? { due: a.due, label: a.remedy + ' (срок, определен от съда)' } : remedyDue(det.procedure, a.remedy, a.served);
     if (r) add(r.due, 'Срок по акт', r.label + ' срещу ' + a.kind.toLowerCase() + (a.no ? ' № ' + a.no : '') + (a.date ? ' от ' + a.date.split('-').reverse().join('.') : ''), !!(a.appealedOn || a.finalOn), { actId: a.id });
+  });
+  // жалбата се подава чрез органа: той я изпраща на съда в 3-дневен срок след изтичането на сроковете за оспорване (чл. 152, ал. 2 АПК)
+  det.filings.filter(f => f.dir === 'Подадено от нас' && /Жалба/.test(f.kind) && /чл\. 152/.test(f.via)).forEach(f => {
+    const from = det.appealBy && det.appealBy > f.date ? det.appealBy : f.date;
+    add(term(from, 3), 'Срок на органа', 'Органът трябва да изпрати жалбата и преписката на съда (чл. 152, ал. 2 АПК) – проверете дали е образувано дело', !!(det.instituted || det.epep.gid), {});
   });
   det.deadlines.forEach(dl => add(dl.due, 'Срок', dl.label + (dl.basis ? ' (' + dl.basis + ')' : ''), dl.done, { id: dl.id }));
   det.fees.filter(f => f.dueDate && f.status === 'Дължима').forEach(f => add(f.dueDate, 'Внасяне', f.kind + (f.amount ? ' ' + f.amount + ' ' + (f.currency || 'EUR') : ''), false, { feeId: f.id }));
@@ -147,6 +174,16 @@ export function courtView(x, today = todayIso()) {
   const open = courtDeadlines(x, det, today).filter(dl => !dl.done && dl.daysLeft >= 0 && dl.kind !== 'Заседание');
   o.nextDeadline = open[0] || null;
   o.counts = { hearings: det.hearings.length, acts: det.acts.length, filings: det.filings.length, fees: det.fees.length };
+  o.owner = det.owner;
+  o.zdoi = isZdoi(x, det);
+  o.instituted = det.instituted || '';
+  const resp = det.parties.find(p => /^Ответник/.test(p.role));
+  o.respondent = resp ? resp.name : '';
+  const dec = det.acts.filter(a => a.kind === 'Решение').sort((a, b) => b.date.localeCompare(a.date))[0];
+  o.decision = dec ? { date: dec.date, outcome: dec.outcome || '', finalOn: dec.finalOn || '' } : null;
+  o.durationDays = det.instituted && dec ? daysBetween(det.instituted, dec.date) : null;
+  o.totals = feeTotals(det);
+  o.epep = { gid: det.epep.gid || gidOf(det.epep.url), syncedAt: det.epep.syncedAt || '', error: det.epep.error || '' };
   return o;
 }
 
@@ -158,7 +195,7 @@ async function visibleRegNos(app, ctx) {
   const reqs = (await app.store.list('requests')).filter(await reqScope(app, ctx)).map(r => r.regNo);
   return new Set(cases.concat(reqs));
 }
-const seen = (x, regs, ctx) => (x.regNo ? regs.has(x.regNo) : !!ctx.perms.casesAll);
+const seen = (x, regs, ctx) => (x.regNo ? regs.has(x.regNo) : !!ctx.perms.casesAll) || detailsOf(x).owner === ctx.username || (!x.regNo && x.by === ctx.username);
 
 export async function visibleCourts(app, ctx) {
   const regs = await visibleRegNos(app, ctx);
@@ -237,6 +274,22 @@ export async function courtSave(d, ctx, app) {
   if (d.subject !== undefined) det.subject = line(d.subject, 400);
   if (d.appealedAct !== undefined) det.appealedAct = line(d.appealedAct, 300);
   if (d.interest !== undefined) det.interest = line(d.interest, 60);
+  if (d.appealBy !== undefined) det.appealBy = isoDate(d.appealBy, 'Срок за обжалване на акта');
+  if (d.executedOn !== undefined) det.executedOn = isoDate(d.executedOn, 'Органът се произнесе отново на');
+  if (!cur) {
+    // отговорник: въвелият или посоченият (с право „Разпределя преписки“); по подразбиране – отговорникът по преписката
+    let owner = line(d.owner, 40);
+    if (!owner && v.regNo) {
+      const linked = (await app.store.list(/^П-/.test(v.regNo) ? 'requests' : 'cases', { regNo: v.regNo }))[0];
+      owner = (linked && linked.owner) || '';
+      if (owner && owner !== ctx.username && !ctx.perms.assign) owner = '';
+    }
+    owner = owner || ctx.username;
+    if (!(await usersBrief(app)).some(u => u.username === owner)) fail('value', 'Отговорникът трябва да е активен потребител.');
+    assignCheck(ctx, '', owner);
+    det.owner = owner;
+    if (Array.isArray(d.parties)) det.parties = d.parties.slice(0, 20).map(p => Object.assign({ id: newId() }, ITEM.parties(p || {})[0]));
+  }
   v.nextHearing = nextHearingOf(det, isoDate(d.nextHearing, 'Следващо заседание'));
   v.note = packDetails(det);
   const title = courtTitle(v);
@@ -255,6 +308,9 @@ export async function courtSave(d, ctx, app) {
     if (c && c.appealed !== 'Да' && c.locked !== 'Да') await app.store.patch('cases', c._id, { appealed: 'Да', updatedAt: stamp() });
   }
   await audit(app, ctx.username, 'Ново дело', title, '');
+  if (det.owner !== ctx.username) await notifyCourt(app, rec, det, 'Определени сте за отговорник по делото.');
+  // опит за автоматично свързване с ЕПЕП (по съд, номер и година); грешка не спира записа
+  if (d.epep !== false) { try { await syncCourt(app, Object.assign({}, rec, v, { note: v.note }), ctx.username, { quiet: true }); } catch (e) { console.error('epep: ' + e.message); } }
   return { id: rec._id };
 }
 
@@ -278,7 +334,7 @@ const ITEM = {
   },
   acts: d => {
     const remedy = str(d.remedy, 80);
-    if (remedy && remedy !== NO_REMEDY && !remedyNames.includes(remedy)) fail('value', 'Невалидно средство за защита.');
+    if (remedy && remedy !== NO_REMEDY && remedy !== ZDOI_FINAL && !remedyNames.includes(remedy)) fail('value', 'Невалидно средство за защита.');
     const o = { kind: oneOf(d.kind, ACT_KINDS, 'Вид акт'), no: line(d.no, 40), date: isoDate(d.date, 'Дата на акта'), served: isoDate(d.served, 'Съобщено на'),
       outcome: oneOf(d.outcome || '', ACT_OUTCOMES, 'Резултат'), summary: str(d.summary, 4000), remedy, due: isoDate(d.due, 'Срок, определен от съда'),
       appealedOn: isoDate(d.appealedOn, 'Обжалвано на'), finalOn: isoDate(d.finalOn, 'Влязъл в сила на') };
@@ -360,10 +416,200 @@ export async function courtPart(d, ctx, app) {
   return { ok: true };
 }
 
+/* ---------- отговорник ---------- */
+
+export async function courtAssign(d, ctx, app) {
+  const x = await findCourt(app, ctx, d.id), det = detailsOf(x), owner = line(d.owner, 40);
+  if (owner === det.owner) return { owner };
+  if (owner && !(await usersBrief(app)).some(u => u.username === owner)) fail('value', 'Отговорникът трябва да е активен потребител.');
+  assignCheck(ctx, det.owner, owner);
+  det.owner = owner;
+  await app.store.patch('courts', x._id, { note: packDetails(det), updatedAt: stamp() });
+  await courtEvent(app, x, ctx.username, 'Отговорник', owner ? 'Отговорник: ' + owner : 'Без отговорник');
+  await audit(app, ctx.username, 'Отговорник по дело', courtTitle(x), owner || '—');
+  if (owner && owner !== ctx.username) await notifyCourt(app, x, det, 'Определени сте за отговорник по делото.');
+  return { owner };
+}
+
+/* имейл до отговорника по делото (или по преписката, ако делото няма отговорник) */
+async function notifyCourt(app, x, det, text) {
+  let owner = det.owner;
+  if (!owner && x.regNo) {
+    const linked = (await app.store.list(/^П-/.test(x.regNo) ? 'requests' : 'cases', { regNo: x.regNo }))[0];
+    owner = linked && linked.owner;
+  }
+  if (!owner) return false;
+  const u = (await app.store.list('users', { username: owner }))[0];
+  if (!u || u.active !== 'Да' || !u.email || (!notifyOf(u).deadline && !notifyOf(u).assign)) return false;
+  return mail(app, u.email, app.cfg.appName + ' – ' + courtTitle(x), text + '\n\n' + app.cfg.appUrl + '#/court/' + x._id);
+}
+
+/* ---------- ЕПЕП ---------- */
+
+const EPEP_HEARING = { 'Открито': 'Открито заседание', 'Закрито': 'Закрито заседание' };
+const EPEP_RESULT = [['Отлож', 'Отложено'], ['решаване', 'Обявено за решаване'], ['Спря', 'Спряно'], ['Прекрат', 'Прекратено'], ['същество', 'Даден ход по същество']];
+const hearingResultOf = r => { const m = EPEP_RESULT.find(([k]) => new RegExp(k, 'i').test(r || '')); return m ? m[1] : ''; };
+const dmy = iso => (iso ? iso.split('-').reverse().join('.') : '');
+
+/*
+ * Синхронизиране на делото с ЕПЕП: намира делото (по връзката или по съд, номер и година), прибавя новите заседания,
+ * актове и страни, обновява състава и докладчика. Нашите полета (дата на съобщаване, средство за защита, бележки,
+ * кой се явява) не се променят. Връща промените; при промени известява отговорника (освен ако той е пуснал проверката).
+ */
+export async function syncCourt(app, x, by, opts = {}) {
+  const det = detailsOf(x);
+  let gid = det.epep.gid || gidOf(det.epep.url) || gidOf(opts.gid);
+  const found = await epepSearch(app.env, { caseNo: x.caseNo, year: x.year, court: gid ? '' : x.court });
+  let info = gid ? found.find(r => r.gid === gid) : null;
+  if (!gid) {
+    if (found.length !== 1) return { found: found.length, candidates: found.slice(0, 10) };
+    info = found[0];
+    gid = info.gid;
+  }
+  const snap = await epepFetch(app.env, gid, info);
+  const changes = [];
+  const was = JSON.stringify(det);
+  // основни данни и състав
+  det.epep = Object.assign({}, det.epep, { gid, url: caseUrl(gid), syncedAt: stamp(), checkedAt: todayIso(), error: '', access: det.epep.access || '' });
+  if (info) {
+    if (info.instituted && det.instituted !== info.instituted) { det.instituted = info.instituted; changes.push('Образувано на ' + dmy(info.instituted)); }
+    if (info.inNo) det.inNo = info.inNo;
+    const division = [info.department, info.panel].filter(Boolean).join(', ');
+    if (division && det.panel.division !== division) { changes.push('Съдебен състав: ' + division); det.panel.division = division; }
+    if (info.reporter && det.panel.reporter !== info.reporter) { changes.push((det.panel.reporter ? 'Нов съдия-докладчик: ' : 'Съдия-докладчик: ') + info.reporter); det.panel.reporter = info.reporter; }
+    if (info.kind) det.epepKind = info.kind;
+  }
+  // членове и председател – от последния акт със съставители
+  const lastBy = snap.acts.filter(a => a.judges.length > 1).sort((a, b) => b.date.localeCompare(a.date))[0];
+  if (lastBy) {
+    const chair = lastBy.judges.find(j => /председател/i.test(j.role)), members = lastBy.judges.filter(j => !/председател/i.test(j.role)).map(j => j.name).join(', ');
+    if (chair && !det.panel.chair) det.panel.chair = chair.name;
+    if (members && det.panel.members !== members) det.panel.members = members;
+    det.panel.formation = lastBy.judges.length >= 5 ? 'Петчленен' : lastBy.judges.length >= 3 ? 'Тричленен' : det.panel.formation;
+  } else if (snap.acts.length && !det.panel.formation) det.panel.formation = 'Едноличен';
+  const lastH = snap.hearings.filter(hg => !hg.canceled).sort((a, b) => b.date.localeCompare(a.date))[0];
+  if (lastH && lastH.prosecutor) det.panel.prosecutor = lastH.prosecutor;
+  if (lastH && lastH.secretary) det.panel.clerk = lastH.secretary;
+  det.assignments = snap.assignments;
+  det.connected = snap.connected;
+  // заседания
+  snap.hearings.forEach(e => {
+    const cur = det.hearings.find(hg => hg.epepGid === e.gid) || det.hearings.find(hg => !hg.epepGid && hg.date === e.date && (!hg.time || !e.time || hg.time === e.time));
+    const kind = EPEP_HEARING[e.type] || (/закрит/i.test(e.type) ? 'Закрито заседание' : 'Открито заседание');
+    const mapped = hearingResultOf(e.result);
+    if (!cur) {
+      det.hearings.push({ id: newId(), epepGid: e.gid, date: e.date, time: e.time, kind, room: e.room, result: mapped, epepResult: e.result, canceled: e.canceled, video: e.video, attendee: '', note: '' });
+      changes.push((e.canceled ? 'Отменено заседание ' : 'Ново заседание ') + dmy(e.date) + (e.time ? ' ' + e.time : '') + ' (' + kind.toLowerCase() + ')' + (e.result ? ' – ' + e.result : ''));
+      return;
+    }
+    if (cur.date !== e.date || (e.time && cur.time !== e.time)) changes.push('Заседанието от ' + dmy(cur.date) + ' е преместено на ' + dmy(e.date) + (e.time ? ' ' + e.time : ''));
+    if ((cur.epepResult || '') !== e.result && e.result) changes.push('Заседание ' + dmy(e.date) + ': ' + e.result);
+    if (!cur.canceled && e.canceled) changes.push('Заседанието на ' + dmy(e.date) + ' е отменено');
+    Object.assign(cur, { epepGid: e.gid, date: e.date, time: e.time || cur.time, kind, room: e.room || cur.room, epepResult: e.result, canceled: e.canceled, video: e.video, result: mapped || cur.result });
+  });
+  // съдебни актове
+  const zdoi = isZdoi(x, det);
+  snap.acts.forEach(e => {
+    const cur = det.acts.find(a => a.epepGid === e.gid) || det.acts.find(a => !a.epepGid && a.date === e.date && String(a.no || '') === e.no);
+    const kind = ACT_KINDS.includes(e.kind) ? e.kind : 'Друг акт';
+    const judges = e.judges.map(j => j.name + (j.role ? ' (' + j.role.toLowerCase() + ')' : '')).join(', ');
+    if (!cur) {
+      det.acts.push({ id: newId(), epepGid: e.gid, kind, epepKind: e.kind, no: e.no, date: e.date, served: '', outcome: '', summary: '', judges,
+        remedy: zdoi && kind === 'Решение' && x.instance !== 'Касационна инстанция' ? ZDOI_FINAL : '', due: '', appealedOn: '', finalOn: kind === 'Протокол' ? '' : e.inPower });
+      changes.push('Нов акт: ' + e.kind.toLowerCase() + (e.no ? ' № ' + e.no : '') + ' от ' + dmy(e.date) + (e.inPower && kind !== 'Протокол' ? ' (в сила от ' + dmy(e.inPower) + ')' : ''));
+      return;
+    }
+    if (e.inPower && kind !== 'Протокол' && !cur.finalOn) { cur.finalOn = e.inPower; changes.push(e.kind + (e.no ? ' № ' + e.no : '') + ' влезе в сила на ' + dmy(e.inPower)); }
+    Object.assign(cur, { epepGid: e.gid, epepKind: e.kind, no: cur.no || e.no, judges });
+  });
+  // страни
+  snap.sides.forEach(e => {
+    if (det.parties.some(pt => pt.epepGid === e.gid || (pt.name.toLowerCase() === e.name.toLowerCase()))) return;
+    const role = PARTY_ROLES.find(r => r.toLowerCase() === e.role.toLowerCase()) || 'Друго';
+    det.parties.push({ id: newId(), epepGid: e.gid, role, epepRole: e.role, name: e.name, rep: e.lawyers.join(', '), contact: '', note: '' });
+    changes.push('Страна: ' + e.role.toLowerCase() + ' – ' + e.name);
+  });
+  ['hearings', 'acts'].forEach(k => det[k].sort((a, b) => String(a.date).localeCompare(String(b.date))));
+  // статус
+  const patch = { note: packDetails(det), nextHearing: nextHearingOf(det, x.nextHearing), updatedAt: stamp() };
+  const dec = det.acts.filter(a => a.kind === 'Решение').sort((a, b) => b.date.localeCompare(a.date))[0];
+  if (dec && dec.finalOn && x.status !== 'Влязло в сила') patch.status = 'Влязло в сила';
+  else if (dec && ['Образувано', 'Оставено без движение', 'Насрочено', 'Отложено', 'Спряно', 'Обявено за решаване'].includes(x.status)) patch.status = 'Решено';
+  else if (!dec && patch.nextHearing && x.status === 'Образувано') patch.status = 'Насрочено';
+  if (patch.status) changes.push('Статус: ' + patch.status);
+  if (JSON.stringify(det) !== was || patch.status) await app.store.patch('courts', x._id, patch);
+  await app.kv.put('epep:' + x._id, JSON.stringify(Object.assign({ at: stamp() }, snap)));
+  if (changes.length) {
+    await courtEvent(app, x, by, 'ЕПЕП', changes.join('\n'));
+    if (x.regNo) await reqEvent(app, x.regNo, by, courtTitle(x) + ' – от ЕПЕП: ' + changes.join('; '));
+    if (!opts.quiet && det.owner !== by) await notifyCourt(app, x, det, 'Промени по делото според ЕПЕП:\n\n– ' + changes.join('\n– '));
+  }
+  return { gid, changes };
+}
+
+/* бутон „Обнови от ЕПЕП“ / свързване с избрано дело */
+export async function courtEpep(d, ctx, app) {
+  const x = await findCourt(app, ctx, d.id);
+  if (d.unlink === true) {
+    const det = detailsOf(x);
+    det.epep = Object.assign({}, det.epep, { gid: '', url: '', syncedAt: '', error: '' });
+    await app.store.patch('courts', x._id, { note: packDetails(det), updatedAt: stamp() });
+    await app.kv.delete('epep:' + x._id);
+    await courtEvent(app, x, ctx.username, 'ЕПЕП', 'Връзката с ЕПЕП е премахната.');
+    return { unlinked: true };
+  }
+  let r;
+  try { r = await syncCourt(app, x, ctx.username, { gid: str(d.gid, 80) }); } catch (e) {
+    const det = detailsOf(x);
+    det.epep.error = e.message.slice(0, 200);
+    await app.store.patch('courts', x._id, { note: packDetails(det) });
+    fail('epep', e.message);
+  }
+  if (!r.gid) return r;
+  await audit(app, ctx.username, 'Обновено от ЕПЕП', courtTitle(x), r.changes.length + ' промени');
+  return r;
+}
+
+/* последните сурови данни от ЕПЕП (разпределения, свързани дела) */
+export async function courtEpepRaw(d, ctx, app) {
+  const x = await findCourt(app, ctx, d.id);
+  const raw = await app.kv.get('epep:' + x._id);
+  return { epep: raw ? JSON.parse(raw) : null };
+}
+
+/*
+ * Cron: веднъж дневно (след 7 ч.) проверява в ЕПЕП висящите дела и решените през последните 60 дни.
+ * По няколко дела на пускане, за да не се надхвърлят ограниченията на Worker-а; помни докъде е стигнал за деня.
+ */
+const CLOSED = ['Прекратено', 'Влязло в сила'];
+export async function epepDaily(app, now = new Date(), batch = 3) {
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Sofia', hour: '2-digit', hourCycle: 'h23' }).format(now));
+  if (hour < 7) return { skipped: 'рано' };
+  const today = todayIso(now), key = 'epep:day:' + today;
+  const done = JSON.parse((await app.kv.get(key)) || '[]');
+  const due = (await app.store.list('courts')).filter(x => !done.includes(x._id) && x.caseNo && x.year &&
+    (!CLOSED.includes(x.status) || (x.updatedAt && daysBetween(String(x.updatedAt).slice(0, 10), today) <= 60)));
+  const run = { checked: 0, changed: 0, errors: 0, left: Math.max(0, due.length - batch) };
+  for (const x of due.slice(0, batch)) {
+    done.push(x._id);
+    try {
+      const r = await syncCourt(app, x, 'ЕПЕП');
+      run.checked++;
+      if (r.changes && r.changes.length) run.changed++;
+    } catch (e) {
+      run.errors++;
+      console.error('epep ' + x._id + ': ' + e.message);
+    }
+  }
+  await app.kv.put(key, JSON.stringify(done), { expirationTtl: 2 * 86400 });
+  return run;
+}
+
 export async function courtDelete(d, ctx, app) {
   const cur = await findCourt(app, ctx, d.id);
   if (!ctx.admin && cur.by !== ctx.username) fail('role', 'Делото се изтрива от въвелия го или администратор.');
   await app.store.remove('courts', cur._id);
+  await app.kv.delete('epep:' + cur._id);
   const title = courtTitle(cur);
   if (cur.regNo) await reqEvent(app, cur.regNo, ctx.username, 'Изтрито дело: ' + title);
   await audit(app, ctx.username, 'Изтрито дело', title, '');
