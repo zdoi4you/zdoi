@@ -73,7 +73,7 @@ export async function findCase(app, regNo, ctx) {
 const unlocked = c => { if (c.locked === 'Да') fail('caselocked', 'Преписката е заключена от ' + (c.lockedBy || 'администратор') + '. Отключете я, за да я промените.'); };
 const event = (app, regNo, user, kind, text) => app.store.insert('events', { regNo, at: stamp(), user, kind, text: String(text).slice(0, 4000) });
 
-export const lists = () => ({
+export const lists = () => Object.assign({
   statuses: CASE_STATUS, kinds: CASE_KIND, channels: CASE_CHANNEL, applicantTypes: APPLICANT_TYPE, addresseeTypes: ADDRESSEE_TYPE,
   outcomes: CASE_OUTCOME, servedHow: SERVED_HOW
 }, courtLists());

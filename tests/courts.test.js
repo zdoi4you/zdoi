@@ -82,3 +82,9 @@ test('дело: състав, ЕПЕП, заседания, актове със 
   assert.equal((await nabl.call('court.get', { id })).ok, true);
   assert.equal((await nabl.call('court.part', { id, part: 'parties', item: { role: 'Ответник', name: 'X' } })).error, 'role');
 });
+
+test('bootstrap: всички списъци за формулярите (вид адресат, статуси, дела)', async () => {
+  const { admin } = await ready();
+  const b = await admin.call('bootstrap');
+  ['addresseeTypes', 'applicantTypes', 'statuses', 'kinds', 'channels', 'outcomes', 'servedHow', 'courtKinds', 'courts', 'reqStatuses', 'docKinds'].forEach(k => assert.ok(Array.isArray(b.lists[k]) && b.lists[k].length, k));
+});
