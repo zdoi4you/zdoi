@@ -12,6 +12,8 @@ import { usersBrief, assignCheck } from './users.js';
 import { reqLists, reqDashboard, orgProfile, REG_BASIS, reqScope, withReqDue, SCHEDULED } from './requests.js';
 import { personsFor, codeOf, defaultPersonOf, DEFAULT_CODE } from './persons.js';
 import { mailboxAddress } from './mailbox.js';
+import { courtLists, courtView, courtDeadlines, detailsOf, visibleCourts, courtTitle } from './courts.js';
+export { COURT_KIND, COURT_INSTANCE, COURT_STATUS, COURTS, courtList, courtSave, courtDelete } from './courts.js';
 
 export const CASE_STATUS = ['Нова', 'В обработка', 'Чака уточняване', 'Чака трето лице', 'Решение издадено', 'Приключена'];
 export const CASE_OPEN = ['Нова', 'В обработка', 'Чака уточняване', 'Чака трето лице'];
@@ -22,10 +24,6 @@ export const ADDRESSEE_TYPE = ['Задължен субект (орган или
 export const CASE_OUTCOME = ['', 'Предоставен достъп', 'Частичен достъп', 'Отказ', 'Препратено (чл. 32)', 'Няма информация (чл. 33)', 'Без разглеждане', 'Отказ на заявителя (чл. 36)'];
 export const DECISION_OUTCOMES = ['Предоставен достъп', 'Частичен достъп', 'Отказ'];
 export const SERVED_HOW = ['', 'Срещу подпис', 'С препоръчано писмо с обратна разписка', 'По имейл', 'Сигурно електронно връчване', 'Чрез платформата по чл. 15в'];
-export const COURT_KIND = ['Жалба срещу решение', 'Жалба срещу мълчалив отказ', 'Касационна жалба', 'Друго'];
-export const COURT_INSTANCE = ['Административен съд', 'Върховен административен съд'];
-export const COURT_STATUS = ['Образувано', 'Насрочено', 'Обявено за решаване', 'Решено', 'Прекратено', 'Обжалвано'];
-export const COURTS = ['Административен съд – Благоевград', 'Административен съд – Бургас', 'Административен съд – Варна', 'Административен съд – Велико Търново', 'Административен съд – Видин', 'Административен съд – Враца', 'Административен съд – Габрово', 'Административен съд – Добрич', 'Административен съд – Кърджали', 'Административен съд – Кюстендил', 'Административен съд – Ловеч', 'Административен съд – Монтана', 'Административен съд – Пазарджик', 'Административен съд – Перник', 'Административен съд – Плевен', 'Административен съд – Пловдив', 'Административен съд – Разград', 'Административен съд – Русе', 'Административен съд – Силистра', 'Административен съд – Сливен', 'Административен съд – Смолян', 'Административен съд – София-град', 'Административен съд – София-област', 'Административен съд – Стара Загора', 'Административен съд – Търговище', 'Административен съд – Хасково', 'Административен съд – Шумен', 'Административен съд – Ямбол', 'Върховен административен съд'];
 
 const APPEAL_DAYS = 14;
 
@@ -64,9 +62,9 @@ export function withDue(c, today) {
 }
 
 /* входящият регистър се вижда с право „Вижда входящия регистър“; без „всички преписки“ – само възложените и въведените от потребителя */
-const canSee = (c, ctx) => !!ctx.perms.inReg && (!!ctx.perms.casesAll || c.owner === ctx.username || c.createdBy === ctx.username);
+export const canSee = (c, ctx) => !!ctx.perms.inReg && (!!ctx.perms.casesAll || c.owner === ctx.username || c.createdBy === ctx.username);
 
-async function findCase(app, regNo, ctx) {
+export async function findCase(app, regNo, ctx) {
   const c = (await app.store.list('cases', { regNo: line(regNo, 60) }))[0];
   if (!c || !canSee(c, ctx)) fail('notfound', 'Преписката не е намерена.');
   return c;
@@ -77,8 +75,8 @@ const event = (app, regNo, user, kind, text) => app.store.insert('events', { reg
 
 export const lists = () => ({
   statuses: CASE_STATUS, kinds: CASE_KIND, channels: CASE_CHANNEL, applicantTypes: APPLICANT_TYPE, addresseeTypes: ADDRESSEE_TYPE,
-  outcomes: CASE_OUTCOME, servedHow: SERVED_HOW, courtKinds: COURT_KIND, courtInstances: COURT_INSTANCE, courtStatuses: COURT_STATUS, courts: COURTS
-});
+  outcomes: CASE_OUTCOME, servedHow: SERVED_HOW
+}, courtLists());
 
 export async function bootstrap(d, ctx, app) {
   const [users, departments] = await Promise.all([usersBrief(app), app.store.list('departments')]);
@@ -110,7 +108,7 @@ export async function caseGet(d, ctx, app) {
   return {
     case: withDue(c, todayIso()),
     events: events.map(view).reverse(),
-    courts: courts.filter(x => x.regNo === c.regNo).map(courtView)
+    courts: courts.filter(x => x.regNo === c.regNo).map(x => courtView(x))
   };
 }
 
@@ -269,7 +267,7 @@ export async function dashboard(d, ctx, app) {
   const brief = c => ({ regNo: c.regNo, applicantName: c.applicantName, status: c.status, owner: c.owner, due: c.due, dueLabel: c.dueLabel, daysLeft: c.daysLeft, appealBy: c.appealBy, appealDays: c.appealDays, locked: c.locked });
   const open = cases.filter(c => CASE_OPEN.includes(c.status));
   const hearings = (await app.store.list('courts')).filter(x => x.nextHearing && x.nextHearing >= today && daysBetween(today, x.nextHearing) <= 30)
-    .filter(x => !x.regNo || cases.some(c => c.regNo === x.regNo)).map(courtView).sort((a, b) => a.nextHearing.localeCompare(b.nextHearing));
+    .filter(x => !x.regNo || cases.some(c => c.regNo === x.regNo)).map(x => courtView(x)).sort((a, b) => a.nextHearing.localeCompare(b.nextHearing));
   return Object.assign(await reqDashboard(app, ctx, line(d.person, 10)), {
     byStatus, total: cases.length, open: open.length,
     overdue: open.filter(c => c.daysLeft !== null && c.daysLeft < 0).map(brief),
@@ -277,7 +275,9 @@ export async function dashboard(d, ctx, app) {
     mine: open.filter(c => c.owner === ctx.username).map(brief).sort((a, b) => (a.due || '9').localeCompare(b.due || '9')),
     unassigned: open.filter(c => !c.owner).map(brief),
     appeals: cases.filter(c => c.appealDays !== null && c.appealDays >= 0 && c.appealDays <= 7).map(brief),
-    hearings
+    hearings,
+    courtDue: (await visibleCourts(app, ctx)).flatMap(x => courtDeadlines(x, detailsOf(x), today).filter(dl => !dl.done && dl.kind !== 'Заседание' && dl.daysLeft <= 14 && dl.daysLeft >= -30)
+      .map(dl => Object.assign(dl, { courtId: x._id, title: courtTitle(x) }))).sort((a, b) => a.date.localeCompare(b.date))
   });
 }
 
@@ -307,66 +307,16 @@ export async function calendar(d, ctx, app) {
       if (c.appealBy) add(c.appealBy, 'Срок за обжалване (входящо)', c.regNo, c.applicantName, href, '');
     });
   }
-  (await app.store.list('courts')).filter(x => x.nextHearing && (visible.has(x.regNo) || (!x.regNo && ctx.perms.casesAll)))
-    .forEach(x => add(x.nextHearing, 'Съдебно заседание', String(x.court || '').replace('Административен съд – ', 'АС ') + ' № ' + x.caseNo + '/' + x.year, x.kind, '#/courts', 'info'));
+  // делата: заседанията, сроковете по актовете, поставените от съда срокове и дължимите такси
+  (await app.store.list('courts')).filter(x => visible.has(x.regNo) || (!x.regNo && ctx.perms.casesAll)).forEach(x => {
+    const det = detailsOf(x), ref = String(x.court || '').replace('Административен съд – ', 'АС ') + ' № ' + x.caseNo + '/' + x.year, href = '#/court/' + x._id;
+    if (!det.hearings.length && x.nextHearing) add(x.nextHearing, 'Съдебно заседание', ref, x.kind, href, 'info');
+    det.hearings.forEach(hg => add(hg.date + (hg.time ? 'T' + hg.time : ''), 'Съдебно заседание', ref, hg.kind + (hg.room ? ', зала ' + hg.room : '') + (hg.result ? ' – ' + hg.result : ''), href, 'info'));
+    courtDeadlines(x, det, today).filter(dl => dl.kind !== 'Заседание' && !dl.done).forEach(dl => add(dl.date, dl.kind === 'Внасяне' ? 'Внасяне на такса' : 'Процесуален срок', ref, dl.label, href, dl.daysLeft < 0 ? 'bad' : 'warn'));
+  });
   (await app.store.list('mail', { direction: SCHEDULED })).filter(m => visible.has(m.regNo))
     .forEach(m => add(m.at, 'Насрочено писмо', m.regNo, m.subject + ' → ' + m.to, reqHref(m.regNo), 'info'));
   return { events: events.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)) };
-}
-
-/* ---------- съдебни дела ---------- */
-
-const courtView = x => view(x);
-
-export async function courtList(d, ctx, app) {
-  const cases = (await app.store.list('cases')).filter(c => canSee(c, ctx)).map(c => c.regNo)
-    .concat((await app.store.list('requests')).filter(await reqScope(app, ctx)).map(r => r.regNo));
-  const rows = (await app.store.list('courts')).filter(x => !x.regNo || cases.includes(x.regNo) || ctx.perms.casesAll);
-  return { courts: rows.map(courtView).sort(byDesc('at')), cases };
-}
-
-export async function courtSave(d, ctx, app) {
-  const v = {
-    regNo: line(d.regNo, 60), court: oneOf(d.court, COURTS, 'Съд'), caseNo: line(d.caseNo, 40), year: intIn(d.year, 2000, 2100, 'Година'),
-    kind: oneOf(d.kind, COURT_KIND, 'Вид'), instance: oneOf(d.instance, COURT_INSTANCE, 'Инстанция'), status: oneOf(d.status, COURT_STATUS, 'Статус'),
-    nextHearing: isoDate(d.nextHearing, 'Следващо заседание'), result: line(d.result, 250), note: str(d.note, 4000)
-  };
-  if (!v.caseNo || !v.year) fail('required', 'Посочете номер и година на делото.');
-  // делото се води и при заключена преписка; връзката е към получено (ВХ-…) или изходящо заявление (П-…)
-  if (v.regNo && /^П-/.test(v.regNo)) {
-    const r = (await app.store.list('requests', { regNo: v.regNo }))[0];
-    if (!r || !(await reqScope(app, ctx))(r)) fail('notfound', 'Преписката не е намерена.');
-  } else if (v.regNo) await findCase(app, v.regNo, ctx);
-  const rows = await app.store.list('courts');
-  if (rows.some(x => x.court === v.court && x.caseNo === v.caseNo && x.year === v.year && x._id !== String(d.id || ''))) fail('duplicate', 'Това дело вече е въведено.');
-  const title = v.court + ' № ' + v.caseNo + '/' + v.year;
-  if (d.id) {
-    const cur = rows.find(x => x._id === String(d.id));
-    if (!cur) fail('notfound', 'Делото не е намерено.');
-    await app.store.patch('courts', cur._id, Object.assign(v, { updatedAt: stamp() }));
-    if (v.regNo) await event(app, v.regNo, ctx.username, 'Дело', 'Променено дело: ' + title + ' – ' + v.status);
-    await audit(app, ctx.username, 'Промяна на дело', title, v.status);
-    return { id: cur._id };
-  }
-  const rec = await app.store.insert('courts', Object.assign(v, { by: ctx.username, at: stamp(), updatedAt: stamp() }));
-  if (v.regNo) {
-    await event(app, v.regNo, ctx.username, 'Дело', 'Ново дело: ' + title);
-    const c = (await app.store.list('cases', { regNo: v.regNo }))[0];
-    if (c && c.appealed !== 'Да' && c.locked !== 'Да') await app.store.patch('cases', c._id, { appealed: 'Да', updatedAt: stamp() });
-  }
-  await audit(app, ctx.username, 'Ново дело', title, '');
-  return { id: rec._id };
-}
-
-export async function courtDelete(d, ctx, app) {
-  const cur = await app.store.get('courts', str(d.id, 20));
-  if (!cur) fail('notfound', 'Делото не е намерено.');
-  if (!ctx.admin && cur.by !== ctx.username) fail('role', 'Делото се изтрива от въвелия го или администратор.');
-  await app.store.remove('courts', cur._id);
-  const title = cur.court + ' № ' + cur.caseNo + '/' + cur.year;
-  if (cur.regNo) await event(app, cur.regNo, ctx.username, 'Дело', 'Изтрито дело: ' + title);
-  await audit(app, ctx.username, 'Изтрито дело', title, '');
-  return {};
 }
 
 /* ---------- адресати ---------- */

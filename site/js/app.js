@@ -404,7 +404,7 @@ function shell() {
 
 function markNav() {
   const cur = location.hash.split('?')[0].split('/').slice(0, 2).join('/');
-  const alias = { '#/case': '#/cases', '#/request': '#/requests', '#/logins': can('logins') ? '#/logins/*' : '' };
+  const alias = { '#/court': '#/courts', '#/case': '#/cases', '#/request': '#/requests', '#/logins': can('logins') ? '#/logins/*' : '' };
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === (alias[cur] || cur)));
   document.body.classList.remove('nav-open');
 }
@@ -616,8 +616,10 @@ async function dashboardView() {
         h('section', { class: 'card stack' }, h('h2', null, 'Изтичат скоро'), caseRows(d.soon, 'Няма срокове в следващите 3 дни.')),
         h('section', { class: 'card stack' }, h('h2', null, 'Моите преписки'), caseRows(d.mine, 'Нямате възложени преписки.')),
         h('section', { class: 'card stack' }, h('h2', null, 'Срок за обжалване (до 7 дни)'), caseRows(d.appeals, 'Няма решения с изтичащ срок за обжалване.', false)),
+        h('section', { class: 'card stack' }, h('h2', null, 'Срокове по дела (14 дни)'), (d.courtDue || []).length ? h('ul', { class: 'list-plain' }, d.courtDue.map(dl => h('li', null,
+          h('span', null, h('a', { href: '#/court/' + dl.courtId }, dl.title.replace('Административен съд – ', 'АС ')), h('br'), h('span', { class: 'small muted' }, dl.label)), deadlineBadge(dl)))) : h('p', { class: 'empty' }, 'Няма изтичащи процесуални срокове.')),
         h('section', { class: 'card stack' }, h('h2', null, 'Заседания (30 дни)'), d.hearings.length ? h('ul', { class: 'list-plain' }, d.hearings.map(x => h('li', null,
-          h('a', { href: x.regNo ? '#/case/' + encodeURIComponent(x.regNo) : '#/courts' }, x.court.replace('Административен съд – ', 'АС ') + ' № ' + x.caseNo + '/' + x.year),
+          h('a', { href: '#/court/' + x._id }, x.court.replace('Административен съд – ', 'АС ') + ' № ' + x.caseNo + '/' + x.year),
           h('span', null, fmtDate(x.nextHearing))))) : h('p', { class: 'empty' }, 'Няма насрочени заседания.')),
         h('section', { class: 'card stack' }, h('h2', null, 'По статус'), h('ul', { class: 'list-plain' }, Object.entries(d.byStatus).map(([s, n]) => h('li', null, statusPill(s), h('b', null, n)))))) : null);
   } catch (e) { failView(e); }
@@ -762,10 +764,10 @@ async function caseView(regNo) {
       await api('case.lock', { regNo: c.regNo, locked: !locked, reason: v.reason }); toast(locked ? 'Отключена.' : 'Заключена.'); reload();
     }) }, locked ? 'Отключи' : 'Заключи') : null);
 
-  const courtCard = h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Съдебни дела'), me.perms.courts ? h('button', { class: 'btn sm', onclick: () => courtDialog({ regNo: c.regNo }, reload) }, 'Добави дело') : null),
+  const courtCard = h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Съдебни дела'), me.perms.courts ? h('button', { class: 'btn sm', onclick: () => courtDialog({ regNo: c.regNo, procedure: 'АПК' }, reload) }, 'Добави дело') : null),
     d.courts.length ? h('ul', { class: 'list-plain' }, d.courts.map(x => h('li', null,
       h('span', null, x.court.replace('Административен съд – ', 'АС '), ' № ', x.caseNo, '/', x.year, h('br'), h('span', { class: 'small muted' }, x.status + (x.nextHearing ? ' · заседание ' + fmtDate(x.nextHearing) : ''))),
-      me.perms.courts ? h('button', { class: 'btn sm', onclick: () => courtDialog(x, reload) }, 'Промени') : null))) : h('p', { class: 'empty' }, 'Няма дела.'));
+      h('a', { class: 'btn sm', href: '#/court/' + x._id }, 'Отвори')))) : h('p', { class: 'empty' }, 'Няма дела.'));
 
   const comment = h('form', null, field({ k: 'text', label: 'Вътрешен коментар', type: 'textarea', rows: 3, max: 4000, req: true, full: true }), h('div', { class: 'actions mt-8' }, h('button', { type: 'submit', class: 'btn sm primary' }, 'Добави')));
   onSubmit(comment, async v => { await api('case.comment', { regNo: c.regNo, text: v.text }); toast('Коментарът е добавен.'); reload(); });
@@ -797,28 +799,39 @@ async function caseView(regNo) {
 
 /* ---------- дела ---------- */
 
+const courtShort = x => String(x.court || '').replace('Административен съд – ', 'АС ').replace('Върховен административен съд', 'ВАС').replace('Върховен касационен съд', 'ВКС') + ' № ' + x.caseNo + '/' + x.year;
+const money = n => (Math.round(Number(n || 0) * 100) / 100).toLocaleString('bg-BG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+const deadlineBadge = dl => dl.done ? h('span', { class: 'pill ok' }, 'изпълнено') : h('span', { class: 'pill ' + (dl.daysLeft < 0 ? 'bad' : dl.daysLeft <= 3 ? 'warn' : 'info') }, fmtDate(dl.date) + ' · ' + dueText(dl.daysLeft));
+
+/* основни данни на делото (нови и съществуващи) */
 function courtDialog(x, done) {
   const fields = [
-    { k: 'regNo', label: 'Преписка (рег. №)', max: 60, list: 'case-nos' },
-    { k: 'court', label: 'Съд', type: 'select', options: boot.lists.courts, req: true },
+    { k: 'regNo', label: 'Преписка (рег. №)', max: 60, list: 'case-nos', hint: 'ВХ-… (входящ регистър) или П-… (заявление до институция).' },
+    { k: 'procedure', label: 'Процесуален ред', type: 'select', options: boot.lists.procedures.map(o => [o, o === 'АПК' ? 'АПК – административно дело' : 'ГПК – гражданско дело']), req: true },
+    { k: 'court', label: 'Съд', req: true, max: 160, list: 'court-names', full: true },
     { k: 'instance', label: 'Инстанция', type: 'select', options: boot.lists.courtInstances, req: true },
+    { k: 'kind', label: 'Вид производство', type: 'select', options: boot.lists.courtKinds, req: true },
     { k: 'caseNo', label: '№ на дело', req: true, max: 40 },
     { k: 'year', label: 'Година', type: 'number', req: true, min: 2000, maxValue: 2100 },
-    { k: 'kind', label: 'Вид', type: 'select', options: boot.lists.courtKinds, req: true },
+    { k: 'instituted', label: 'Образувано на', type: 'date' },
     { k: 'status', label: 'Статус', type: 'select', options: boot.lists.courtStatuses, req: true },
-    { k: 'nextHearing', label: 'Следващо заседание', type: 'date' },
-    { k: 'result', label: 'Резултат', max: 250, full: true },
-    { k: 'note', label: 'Бележки', type: 'textarea', full: true, max: 4000, rows: 3 }
+    { k: 'subject', label: 'Предмет на делото', max: 400, full: true, hint: 'Напр. „Жалба срещу Решение № 15/10.11.2026 на кмета на Столична община за отказ по ЗДОИ“.' },
+    { k: 'appealedAct', label: 'Обжалван акт / искане', max: 300, full: true },
+    { k: 'interest', label: 'Цена на иска / материален интерес', max: 60, hint: 'При неоценяеми искове (ЗДОИ) – празно.' },
+    { k: 'nextHearing', label: 'Следващо заседание', type: 'date', hint: 'Изчислява се от „Заседания“, ако има въведени.' },
+    { k: 'result', label: 'Резултат (кратко)', max: 250, full: true },
+    { k: 'note', label: 'Бележки', type: 'textarea', full: true, max: 8000, rows: 3 }
   ];
-  const values = Object.assign({ year: new Date().getFullYear(), court: 'Административен съд – София-град' }, x);
-  const del = x.id || x._id ? h('button', { type: 'button', class: 'btn danger mr-auto', onclick: async () => {
-    if (!confirm('Да се изтрие ли делото?')) return;
-    try { await api('court.delete', { id: x._id }); d.close(); toast('Делото е изтрито.'); done(); } catch (e) { toast(e.message); }
+  const values = Object.assign({ year: new Date().getFullYear(), court: 'Административен съд – София-град', procedure: 'АПК', instance: 'Първа инстанция', status: 'Образувано' }, x);
+  const del = x._id ? h('button', { type: 'button', class: 'btn danger mr-auto', onclick: async () => {
+    if (!confirm('Да се изтрие ли делото с всички заседания, актове, такси и срокове?')) return;
+    try { await api('court.delete', { id: x._id }); d.close(); toast('Делото е изтрито.'); done(true); } catch (e) { toast(e.message); }
   } }, 'Изтрий') : null;
-  const d = formDialog(x._id ? 'Дело' : 'Ново дело', fields, values, 'Запази', async v => {
-    await api('court.save', Object.assign(v, { id: x._id || '' }));
-    toast('Делото е записано.'); done();
-  }, { wide: true });
+  const d = formDialog(x._id ? 'Основни данни на делото' : 'Ново дело', fields, values, 'Запази', async v => {
+    const r = await api('court.save', Object.assign(v, { id: x._id || '' }));
+    toast('Делото е записано.');
+    if (!x._id) location.hash = '#/court/' + r.id; else done();
+  }, { wide: true, extra: h('datalist', { id: 'court-names' }, boot.lists.courts.map(n => h('option', { value: n }))) });
   if (del) d.querySelector('.actions').prepend(del);
 }
 
@@ -827,13 +840,269 @@ async function courtsView() {
   try {
     const { courts, cases } = await api('court.list');
     const list = h('datalist', { id: 'case-nos' }, cases.map(n => h('option', { value: n })));
-    setView(head('Съдебни дела', me.perms.courts ? h('button', { class: 'btn primary', onclick: () => courtDialog({}, courtsView) }, 'Ново дело') : null), list,
-      h('div', { class: 'card' }, table(['Съд', 'Дело', 'Вид', 'Статус', 'Заседание', 'Преписка', ''], courts.map(x => h('tr', null,
-        h('td', null, x.court, h('br'), h('span', { class: 'small muted' }, x.instance)), h('td', { class: 'mono' }, x.caseNo + '/' + x.year), h('td', null, x.kind),
-        h('td', null, h('span', { class: 'pill' }, x.status), x.result ? h('div', { class: 'small muted' }, x.result) : null), h('td', null, x.nextHearing ? fmtDate(x.nextHearing) : '—'),
-        h('td', null, x.regNo ? h('a', { href: '#/case/' + encodeURIComponent(x.regNo) }, x.regNo) : '—'),
-        h('td', null, me.perms.courts ? h('button', { class: 'btn sm', onclick: () => courtDialog(x, courtsView) }, 'Промени') : null))), 'Няма въведени дела.')));
+    const q = h('input', { type: 'search', placeholder: 'Търсене: съд, №, докладчик, преписка…', 'aria-label': 'Търсене' });
+    const st = h('select', { 'aria-label': 'Статус' }, h('option', { value: '' }, 'Всички статуси'), h('option', { value: 'open' }, 'Висящи'), boot.lists.courtStatuses.map(x => h('option', { value: x }, x)));
+    st.value = 'open';
+    const pr = h('select', { 'aria-label': 'Ред' }, h('option', { value: '' }, 'АПК и ГПК'), boot.lists.procedures.map(x => h('option', { value: x }, x)));
+    const body = h('div');
+    const closed = ['Решено', 'Прекратено', 'Влязло в сила'];
+    const draw = () => {
+      const t = q.value.trim().toLowerCase();
+      const rows = courts.filter(x => (!st.value || (st.value === 'open' ? !closed.includes(x.status) : x.status === st.value)) && (!pr.value || x.procedure === pr.value) &&
+        (!t || [x.court, x.caseNo + '/' + x.year, x.reporter, x.regNo, x.kind, x.result].join(' ').toLowerCase().includes(t)));
+      body.replaceChildren(table(['Дело', 'Вид', 'Статус', 'Заседание', 'Следващ срок', 'Преписка'], rows.map(x => h('tr', { class: 'row-link', onclick: e => { if (!e.target.closest('a')) location.hash = '#/court/' + x._id; } },
+        h('td', null, h('a', { href: '#/court/' + x._id }, h('b', null, courtShort(x))), h('div', { class: 'small muted' }, x.instance + ' · ' + x.procedure + (x.reporter ? ' · докл. ' + x.reporter : ''))),
+        h('td', null, x.kind), h('td', null, h('span', { class: 'pill' }, x.status), x.result ? h('div', { class: 'small muted' }, x.result) : null),
+        h('td', null, x.nextHearing ? fmtDate(x.nextHearing) : '—'),
+        h('td', null, x.nextDeadline ? [deadlineBadge(x.nextDeadline), h('div', { class: 'small muted' }, x.nextDeadline.label)] : '—'),
+        h('td', null, x.regNo ? h('a', { href: (/^П-/.test(x.regNo) ? '#/request/' : '#/case/') + encodeURIComponent(x.regNo) }, x.regNo) : '—'))), 'Няма дела по тези условия.'));
+    };
+    [q, st, pr].forEach(x => x.addEventListener('input', draw));
+    setView(head('Съдебни дела', can('courts') ? h('button', { class: 'btn primary', onclick: () => courtDialog({}, courtsView) }, 'Ново дело') : null), list,
+      h('div', { class: 'card' }, h('div', { class: 'filters' }, q, st, pr), body));
+    draw();
   } catch (e) { failView(e); }
+}
+
+/*
+ * Попълване от ЕПЕП: потребителят копира страницата на делото в ЕПЕП (ecase.justice.bg) и я поставя тук.
+ * Разпознават се номерът, съставът, датите на заседанията и съдебните актове; всичко се преглежда преди запис.
+ */
+function parseEpep(text) {
+  const t = String(text || '').replace(/ /g, ' ');
+  const iso = d => { const m = /(\d{1,2})\.(\d{1,2})\.(\d{4})/.exec(d || ''); return m ? m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0') : ''; };
+  const pick = re => { const m = re.exec(t); return m ? m[1].trim().replace(/\s+/g, ' ').replace(/[;,.]$/, '') : ''; };
+  const out = { panel: {}, hearings: [], acts: [] };
+  const no = /(?:дело|д\.)\s*№?\s*(\d{1,6})\s*(?:\/|по описа (?:на съда )?за)\s*(\d{4})/i.exec(t);
+  if (no) { out.caseNo = no[1]; out.year = no[2]; }
+  out.instituted = iso(pick(/образувано(?: на)?\s*[:\-]?\s*(\d{1,2}\.\d{1,2}\.\d{4})/i));
+  out.panel.reporter = pick(/(?:съдия[- ]докладчик|докладчик)\s*[:\-]?\s*([^\n\t;]{3,80})/i);
+  out.panel.chair = pick(/председател\s*[:\-]?\s*([^\n\t;]{3,80})/i);
+  out.panel.members = pick(/членове\s*[:\-]?\s*([^\n\t]{3,200})/i);
+  out.panel.prosecutor = pick(/прокурор\s*[:\-]?\s*([^\n\t;]{3,80})/i);
+  out.panel.division = pick(/((?:[IVX]+|\d+)[ -]?(?:-?ро|-?во|-?ри|-?ти)?\s*(?:отделение|състав|колегия)[^\n\t;]{0,40})/i);
+  t.split(/\n+/).forEach(ln => {
+    const d = iso(ln);
+    if (!d) return;
+    if (/заседание/i.test(ln)) {
+      const tm = /\b([01]?\d|2[0-3]):([0-5]\d)\b/.exec(ln);
+      const res = ['Обявено за решаване', 'Отложено', 'Даден ход по същество', 'Спряно', 'Прекратено'].find(r => new RegExp(r.split(' ')[0], 'i').test(ln)) || '';
+      out.hearings.push({ date: d, time: tm ? tm[1].padStart(2, '0') + ':' + tm[2] : '', kind: /закрито/i.test(ln) ? 'Закрито заседание' : 'Открито заседание', result: res, room: (/зала\s*([\w\d-]+)/i.exec(ln) || [])[1] || '' });
+    } else {
+      const a = /(решение|определение|разпореждане)\s*(?:№\s*(\d+))?/i.exec(ln);
+      if (a) out.acts.push({ kind: a[1][0].toUpperCase() + a[1].slice(1).toLowerCase(), no: a[2] || '', date: d, summary: ln.trim().slice(0, 300) });
+    }
+  });
+  const uniq = (list, key) => list.filter((x, i) => list.findIndex(y => key(y) === key(x)) === i);
+  out.hearings = uniq(out.hearings, x => x.date + x.time);
+  out.acts = uniq(out.acts, x => x.kind + x.no + x.date);
+  return out;
+}
+
+function epepImport(d, reload) {
+  const ta = h('textarea', { rows: 10, placeholder: 'Отворете делото в ЕПЕП (ecase.justice.bg), маркирайте цялата страница (Ctrl+A), копирайте (Ctrl+C) и поставете тук (Ctrl+V).' });
+  const preview = h('div', { class: 'stack' });
+  let parsed = null;
+  const run = () => {
+    parsed = parseEpep(ta.value);
+    const known = new Set(d.details.hearings.map(x => x.date + (x.time || '')).concat(d.details.acts.map(x => x.kind + x.no + x.date)));
+    parsed.hearings = parsed.hearings.filter(x => !known.has(x.date + x.time));
+    parsed.acts = parsed.acts.filter(x => !known.has(x.kind + x.no + x.date));
+    const p = parsed.panel, row = (label, v) => v ? h('li', null, h('span', { class: 'muted' }, label), h('b', null, v)) : null;
+    preview.replaceChildren(
+      h('ul', { class: 'list-plain' }, row('Дело', parsed.caseNo ? parsed.caseNo + '/' + parsed.year : ''), row('Образувано', fmtDate(parsed.instituted) !== '—' ? fmtDate(parsed.instituted) : ''),
+        row('Докладчик', p.reporter), row('Председател', p.chair), row('Членове', p.members), row('Прокурор', p.prosecutor), row('Отделение / състав', p.division)),
+      h('div', { class: 'small muted' }, 'Нови заседания: ' + parsed.hearings.length + ' · нови съдебни актове: ' + parsed.acts.length),
+      parsed.hearings.length ? h('ul', { class: 'list-plain small' }, parsed.hearings.map(x => h('li', null, h('span', null, x.kind), h('b', null, fmtDate(x.date) + (x.time ? ' ' + x.time : '') + (x.result ? ' – ' + x.result : ''))))) : null,
+      parsed.acts.length ? h('ul', { class: 'list-plain small' }, parsed.acts.map(x => h('li', null, h('span', null, x.kind + (x.no ? ' № ' + x.no : '')), h('b', null, fmtDate(x.date))))) : null);
+  };
+  ta.addEventListener('input', run);
+  const dlg = dialog('Попълване от ЕПЕП', h('div', { class: 'stack' },
+    h('p', { class: 'small muted' }, 'ЕПЕП няма публичен интерфейс за автоматично изтегляне, затова данните се поставят от страницата на делото. Разпознатото се показва долу; съществуващите записи не се дублират. Проверете датите на съобщаване на актовете – от тях тръгват сроковете.'),
+    ta, preview,
+    h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, 'Отказ'), h('button', { type: 'button', class: 'btn primary', onclick: async e => {
+      if (!parsed) return toast('Поставете текста от ЕПЕП.');
+      e.target.disabled = true;
+      try {
+        const id = d.court._id, p = parsed.panel, cur = d.details.panel;
+        if (Object.values(p).some(Boolean)) await api('court.part', { id, part: 'panel', item: Object.assign({}, cur, Object.fromEntries(Object.entries(p).filter(([, v]) => v))) });
+        if (parsed.hearings.length) await api('court.part', { id, part: 'hearings', items: parsed.hearings });
+        if (parsed.acts.length) await api('court.part', { id, part: 'acts', items: parsed.acts });
+        await api('court.part', { id, part: 'epep', item: Object.assign({}, d.details.epep, { checkedAt: todayIso() }) });
+        if (parsed.instituted && !d.details.instituted) await api('court.save', Object.assign({}, d.court, { id, instituted: parsed.instituted, note: undefined }));
+        dlg.close(); toast('Данните от ЕПЕП са добавени.'); reload();
+      } catch (ex) { toast(ex.message); e.target.disabled = false; }
+    } }, 'Добави'))), { wide: true });
+}
+
+/* страница на делото */
+async function courtPage(id) {
+  loading();
+  let d;
+  try { d = await api('court.get', { id }); } catch (e) { return failView(e); }
+  const x = d.court, det = d.details, edit = can('courts'), L = boot.lists;
+  const reload = () => courtPage(id);
+  const part = async (name, data, msg) => { await api('court.part', Object.assign({ id, part: name }, data)); toast(msg || 'Записано.'); reload(); };
+  const remove = (name, it, what) => async () => { if (!confirm('Да се премахне ли ' + what + '?')) return; try { await part(name, { remove: it.id }, 'Премахнато.'); } catch (e) { toast(e.message); } };
+  const users = boot.users.filter(u => u.role !== 'Наблюдател').map(u => u.name);
+  const remedies = [['', '— без срок —'], [L.noRemedy, L.noRemedy]].concat((L.remedies[det.procedure] || []).map(r => [r[0], r[0] + ' – ' + (r[1] === 'd' ? r[2] + ' дни' : r[1] === 'w' ? r[2] + (r[2] === 1 ? ' седмица' : ' седмици') : r[2] + (r[2] === 1 ? ' месец' : ' месеца')) + ' (' + r[3] + ')']));
+  const sec = (title, add, ...body) => h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, title), edit && add ? h('button', { class: 'btn sm', onclick: add }, '+ Добави') : null), ...body);
+  const rowBtns = (onEdit, onDel) => edit ? h('div', { class: 'actions' }, h('button', { class: 'btn sm', onclick: onEdit }, 'Промени'), h('button', { class: 'btn sm danger', onclick: onDel }, '✕')) : null;
+
+  /* заседания */
+  const hearingDlg = it => formDialog(it.id ? 'Заседание' : 'Ново заседание', [
+    { k: 'date', label: 'Дата', type: 'date', req: true }, { k: 'time', label: 'Час', type: 'time' },
+    { k: 'kind', label: 'Вид', type: 'select', options: L.hearingKinds }, { k: 'room', label: 'Зала', max: 40 },
+    { k: 'result', label: 'Резултат', type: 'select', options: L.hearingResults.map(o => [o, o || '— предстои —']) },
+    { k: 'attendee', label: 'Явява се от наша страна', max: 160, list: 'att-names' },
+    { k: 'note', label: 'Бележки (доказателства, указания, следващи действия)', type: 'textarea', full: true, rows: 3, max: 3000 }
+  ], Object.assign({ kind: 'Открито заседание' }, it), 'Запази', v => part('hearings', { item: Object.assign({ id: it.id || '' }, v) }), { wide: true, extra: h('datalist', { id: 'att-names' }, users.map(n => h('option', { value: n }))) });
+  const today = todayIso();
+  const hearings = sec('Заседания', () => hearingDlg({}), det.hearings.length ? table(['Дата и час', 'Вид', 'Зала', 'Резултат', 'Явява се', ''], det.hearings.map(it => h('tr', { class: it.date >= today ? 'upcoming' : '' },
+    h('td', null, h('b', null, fmtDate(it.date)), it.time ? ' ' + it.time : '', h('div', { class: 'small muted' }, dayInfo(it.date).workday ? '' : dayInfo(it.date).label)),
+    h('td', null, it.kind), h('td', null, it.room || '—'), h('td', null, it.result ? h('span', { class: 'pill ' + (it.result === 'Отложено' ? 'warn' : 'info') }, it.result) : h('span', { class: 'muted' }, it.date >= today ? 'предстои' : '—'), it.note ? h('div', { class: 'small pre' }, it.note) : null),
+    h('td', null, it.attendee || '—'), h('td', null, rowBtns(() => hearingDlg(it), remove('hearings', it, 'заседанието')))))) : h('p', { class: 'empty' }, 'Няма въведени заседания.'));
+
+  /* съдебни актове и срокове за обжалване */
+  const actDlg = it => formDialog(it.id ? 'Съдебен акт' : 'Нов съдебен акт', [
+    { k: 'kind', label: 'Вид', type: 'select', options: L.actKinds, req: true }, { k: 'no', label: '№', max: 40 },
+    { k: 'date', label: 'Дата на акта', type: 'date', req: true }, { k: 'served', label: 'Съобщен на (връчен / изтеглен от ЕПЕП)', type: 'date', hint: 'От тази дата тече срокът.' },
+    { k: 'outcome', label: 'Резултат', type: 'select', options: L.actOutcomes.map(o => [o, o || '—']), full: true },
+    { k: 'remedy', label: 'Подлежи на', type: 'select', options: remedies, full: true },
+    { k: 'due', label: 'Друг срок, определен от съда', type: 'date', hint: 'Само ако съдът е дал различен срок (напр. за отстраняване на нередовности).' },
+    { k: 'appealedOn', label: 'Обжалван от нас на', type: 'date' }, { k: 'finalOn', label: 'Влязъл в сила на', type: 'date' },
+    { k: 'summary', label: 'Диспозитив / кратко съдържание', type: 'textarea', full: true, rows: 3, max: 4000 }
+  ], Object.assign({ kind: 'Решение' }, it), 'Запази', v => part('acts', { item: Object.assign({ id: it.id || '' }, v) }), { wide: true });
+  const acts = sec('Съдебни актове и обжалване', () => actDlg({}), det.acts.length ? table(['Акт', 'Резултат', 'Съобщен', 'Срок за обжалване / действие', ''], det.acts.map(it => h('tr', null,
+    h('td', null, h('b', null, it.kind + (it.no ? ' № ' + it.no : '')), h('div', { class: 'small muted' }, fmtDate(it.date))),
+    h('td', null, it.outcome || '—', it.summary ? h('details', null, h('summary', { class: 'small' }, 'Текст'), h('div', { class: 'small pre' }, it.summary)) : null),
+    h('td', null, it.served ? fmtDate(it.served) : h('span', { class: 'warn-text small' }, 'не е съобщен')),
+    h('td', null, it.remedy === L.noRemedy ? h('span', { class: 'muted' }, 'не подлежи на обжалване') : it.deadline
+      ? [h('div', { class: 'small' }, it.deadline.label), it.appealedOn ? h('span', { class: 'pill ok' }, 'обжалван ' + fmtDate(it.appealedOn)) : it.finalOn ? h('span', { class: 'pill' }, 'в сила от ' + fmtDate(it.finalOn)) : deadlineBadge({ date: it.deadline.due, daysLeft: daysBetween(today, it.deadline.due) })]
+      : it.remedy ? h('span', { class: 'small muted' }, it.remedy + ' – въведете датата на съобщаване') : '—', it.finalOn && it.appealedOn ? h('div', { class: 'small muted' }, 'в сила от ' + fmtDate(it.finalOn)) : null),
+    h('td', null, rowBtns(() => actDlg(it), remove('acts', it, 'акта')))))) : h('p', { class: 'empty' }, 'Няма въведени съдебни актове.'));
+
+  /* книжа */
+  const filingDlg = it => formDialog(it.id ? 'Книжа' : 'Нови книжа', [
+    { k: 'date', label: 'Дата', type: 'date', req: true }, { k: 'kind', label: 'Вид', type: 'select', options: L.filingKinds, req: true },
+    { k: 'dir', label: 'Посока', type: 'select', options: L.filingDir }, { k: 'via', label: 'Начин', type: 'select', options: L.filingVia },
+    { k: 'inNo', label: 'Вх. № в съда', max: 40 }, { k: 'note', label: 'Съдържание / бележки', type: 'textarea', full: true, rows: 3, max: 3000 }
+  ], Object.assign({ date: today, kind: 'Молба', dir: 'Подадено от нас', via: 'ЕПЕП' }, it), 'Запази', v => part('filings', { item: Object.assign({ id: it.id || '' }, v) }), { wide: true });
+  const filings = sec('Книжа (молби, становища, доказателства)', () => filingDlg({}), det.filings.length ? table(['Дата', 'Вид', 'От / до', 'Вх. №', ''], det.filings.slice().reverse().map(it => h('tr', null,
+    h('td', null, fmtDate(it.date)), h('td', null, it.kind, it.note ? h('div', { class: 'small muted pre' }, it.note) : null), h('td', { class: 'small' }, it.dir + ' · ' + it.via), h('td', { class: 'mono' }, it.inNo || '—'),
+    h('td', null, rowBtns(() => filingDlg(it), remove('filings', it, 'записа')))))) : h('p', { class: 'empty' }, 'Няма въведени книжа.'));
+
+  /* такси и разноски */
+  const feeDlg = it => formDialog(it.id ? 'Такса или разноски' : 'Нова такса или разноски', [
+    { k: 'kind', label: 'Вид', type: 'select', options: L.feeKinds, req: true }, { k: 'status', label: 'Състояние', type: 'select', options: L.feeStatus },
+    { k: 'amount', label: 'Сума', max: 12, hint: 'Напр. 25,56' }, { k: 'currency', label: 'Валута', type: 'select', options: [['EUR', 'евро'], ['BGN', 'лева (преди 2026 г.)']] },
+    { k: 'dueDate', label: 'Срок за внасяне', type: 'date' }, { k: 'date', label: 'Дата на плащане', type: 'date' },
+    { k: 'payer', label: 'Платец / задължено лице', max: 160 }, { k: 'doc', label: 'Платежен документ №', max: 80 },
+    { k: 'basis', label: 'Основание', max: 160, full: true, hint: 'Напр. Тарифа за държавните такси по ГПК (вр. чл. 151, т. 3 АПК), чл. 143 АПК, чл. 78 ГПК, Наредба № 1/2004 за адв. възнаграждения.' },
+    { k: 'note', label: 'Бележки', type: 'textarea', full: true, rows: 2, max: 2000 }
+  ], Object.assign({ kind: 'Държавна такса', status: 'Дължима', currency: 'EUR' }, it), 'Запази', v => part('fees', { item: Object.assign({ id: it.id || '' }, v) }), { wide: true });
+  const tt = d.totals;
+  const fees = sec('Такси и разноски', () => feeDlg({}),
+    h('div', { class: 'fee-sum' }, [['Платени от нас', tt.paid], ['Дължими', tt.due, tt.due ? 'warn' : ''], ['Присъдени в наша полза', tt.awardedFor, 'ok'], ['Присъдени в наша тежест', tt.awardedAgainst, tt.awardedAgainst ? 'bad' : ''], ['Събрани', tt.collected]]
+      .map(([l, v, c]) => h('div', { class: 'fee-box ' + (c || '') }, h('small', { class: 'muted' }, l), h('b', null, money(v))))),
+    det.fees.length ? table(['Вид', 'Сума', 'Състояние', 'Дати', ''], det.fees.map(it => h('tr', null,
+      h('td', null, it.kind, it.basis ? h('div', { class: 'small muted' }, it.basis) : null, it.payer ? h('div', { class: 'small muted' }, it.payer) : null),
+      h('td', { class: 'num' }, it.amount ? it.amount.replace('.', ',') + ' ' + (it.currency === 'BGN' ? 'лв.' : '€') : '—'),
+      h('td', null, h('span', { class: 'pill ' + ({ 'Дължима': 'warn', 'Платена': 'ok', 'Присъдена в наша полза': 'ok', 'Присъдена в наша тежест': 'bad', 'Събрана': 'ok' }[it.status] || '') }, it.status)),
+      h('td', { class: 'small' }, it.dueDate ? 'до ' + fmtDate(it.dueDate) : '', it.date ? h('div', null, 'платено ' + fmtDate(it.date) + (it.doc ? ' · ' + it.doc : '')) : null),
+      h('td', null, rowBtns(() => feeDlg(it), remove('fees', it, 'записа')))))) : h('p', { class: 'empty' }, 'Няма въведени такси и разноски.'),
+    h('p', { class: 'small muted' }, 'Разноските се искат със списък по чл. 80 ГПК до края на последното заседание; изменение на решението в частта за разноските – по чл. 248 ГПК (вр. чл. 144 АПК). Размерът на таксите – по Тарифата за държавните такси, събирани от съдилищата по ГПК.'));
+
+  /* срокове */
+  const dlDlg = it => formDialog(it.id ? 'Срок' : 'Нов срок, определен от съда', [
+    { k: 'label', label: 'Какво трябва да се направи', req: true, max: 200, full: true }, { k: 'due', label: 'До', type: 'date', req: true },
+    { k: 'basis', label: 'Основание', max: 160, hint: 'Напр. разпореждане от 12.11.2026, чл. 158 АПК' }, { k: 'done', label: 'Изпълнено', type: 'checkbox' },
+    { k: 'note', label: 'Бележки', type: 'textarea', full: true, rows: 2, max: 2000 }
+  ], it, 'Запази', v => part('deadlines', { item: Object.assign({ id: it.id || '' }, v, { done: !!v.done }) }), { wide: true });
+  const dls = d.deadlines.filter(dl => dl.kind !== 'Заседание');
+  const deadlines = sec('Срокове', () => dlDlg({}), dls.length ? h('ul', { class: 'list-plain dl-list' }, dls.map(dl => h('li', { class: dl.done ? 'done' : '' },
+    h('span', null, h('span', { class: 'small muted' }, dl.kind), h('br'), dl.label), h('span', { class: 'stack-r' }, deadlineBadge(dl),
+      edit && dl.id ? h('button', { class: 'btn sm', onclick: () => dlDlg(det.deadlines.find(z => z.id === dl.id)) }, 'Промени') : null))))
+    : h('p', { class: 'empty' }, 'Няма срокове. Сроковете за обжалване се изчисляват от съдебните актове (по ' + det.procedure + '), а тези, които дава съдът – добавете тук.'));
+
+  /* състав */
+  const pn = det.panel;
+  const panelDlg = () => formDialog('Съдебен състав', [
+    { k: 'formation', label: 'Състав', type: 'select', options: L.formations.map(o => [o, o || '—']) }, { k: 'division', label: 'Отделение / колегия / състав №', max: 120 },
+    { k: 'reporter', label: 'Съдия-докладчик', max: 120 }, { k: 'chair', label: 'Председател', max: 120 },
+    { k: 'members', label: 'Членове', max: 300, full: true }, { k: 'prosecutor', label: det.procedure === 'АПК' ? 'Прокурор (чл. 192 АПК)' : 'Прокурор', max: 160 },
+    { k: 'clerk', label: 'Съдебен секретар', max: 120 }
+  ], pn, 'Запази', v => part('panel', { item: v }), { wide: true });
+  const panel = h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Съдебен състав'), edit ? h('button', { class: 'btn sm', onclick: panelDlg }, 'Промени') : null),
+    Object.values(pn).some(Boolean) ? kv([['Състав', [pn.formation, pn.division].filter(Boolean).join(', ')], ['Съдия-докладчик', pn.reporter], ['Председател', pn.chair], ['Членове', pn.members], ['Прокурор', pn.prosecutor], ['Секретар', pn.clerk]])
+      : h('p', { class: 'empty' }, 'Не е въведен.'));
+
+  /* ЕПЕП */
+  const ep = det.epep;
+  const epepDlg = () => formDialog('ЕПЕП – Единен портал за електронно правосъдие', [
+    { k: 'url', label: 'Връзка към делото в ЕПЕП', type: 'url', max: 400, full: true, hint: 'https://ecase.justice.bg/…' },
+    { k: 'id', label: 'Идентификатор на делото в ЕПЕП', max: 80 }, { k: 'access', label: 'Достъп до делото', type: 'select', options: L.epepAccess.map(o => [o, o || '—']) },
+    { k: 'profile', label: 'Чрез профил на', max: 160, hint: 'Лицето или пълномощникът, на чийто профил е даден достъпът.' },
+    { k: 'checkedAt', label: 'Последна проверка в ЕПЕП', type: 'date' },
+    { k: 'eserve', label: 'Съгласие за електронни съобщения и призовки чрез ЕПЕП', type: 'checkbox', full: true }
+  ], Object.assign({}, ep, { eserve: ep.eserve ? 'Да' : '' }), 'Запази', v => part('epep', { item: Object.assign({}, v, { eserve: !!v.eserve }) }), { wide: true });
+  const epep = h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'ЕПЕП'), edit ? h('div', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => epepImport(d, reload) }, 'Попълни от ЕПЕП'), h('button', { class: 'btn sm', onclick: epepDlg }, 'Промени')) : null),
+    kv([['Достъп', ep.access || '—'], ['Профил', ep.profile], ['Идентификатор', ep.id], ['Електронни съобщения', ep.eserve ? 'Да – призовките и съобщенията се връчват чрез ЕПЕП' : 'Не'], ['Проверено', ep.checkedAt ? fmtDate(ep.checkedAt) : '']]),
+    h('div', { class: 'actions' }, h('a', { class: 'btn sm primary', href: ep.url || 'https://ecase.justice.bg/', target: '_blank', rel: 'noopener noreferrer' }, ep.url ? 'Отвори делото в ЕПЕП' : 'Отвори ЕПЕП')),
+    ep.eserve ? h('p', { class: 'small muted' }, 'При електронно връчване съобщението се смята за връчено с изтеглянето му от ЕПЕП – въведете тази дата като „Съобщен на“ при съдебния акт.') : null);
+
+  /* страни */
+  const partyDlg = it => formDialog(it.id ? 'Страна' : 'Нова страна', [
+    { k: 'role', label: 'Качество', type: 'select', options: L.partyRoles, req: true }, { k: 'name', label: 'Име / наименование', req: true, max: 250 },
+    { k: 'rep', label: 'Процесуален представител', max: 250 }, { k: 'contact', label: 'Адрес / имейл за призоваване', max: 250 }, { k: 'note', label: 'Бележка', max: 300, full: true }
+  ], Object.assign({ role: det.procedure === 'ГПК' ? 'Ищец' : 'Жалбоподател' }, it), 'Запази', v => part('parties', { item: Object.assign({ id: it.id || '' }, v) }), { wide: true });
+  const parties = sec('Страни', () => partyDlg({}), det.parties.length ? h('ul', { class: 'list-plain' }, det.parties.map(it => h('li', null,
+    h('span', null, h('span', { class: 'small muted' }, it.role), h('br'), h('b', null, it.name), it.rep ? h('div', { class: 'small muted' }, 'представител: ' + it.rep) : null, it.contact ? h('div', { class: 'small muted' }, it.contact) : null),
+    rowBtns(() => partyDlg(it), remove('parties', it, 'страната'))))) : h('p', { class: 'empty' }, 'Няма въведени страни.'));
+
+  const history = h('section', { class: 'card stack' }, h('h2', null, 'История'),
+    d.events.length ? h('ul', { class: 'timeline' }, d.events.slice(0, 60).map(e => h('li', null, h('div', { class: 'small muted' }, fmtTime(e.at) + ' · ' + userName(e.user) + ' · ' + e.kind), h('div', { class: 'pre small' }, e.text)))) : h('p', { class: 'empty' }, 'Няма записи.'));
+
+  const report = async () => {
+    try {
+      await Docs.open(Docs.dossierDef(Object.assign({
+        org: boot.org, title: 'СПРАВКА ПО ДЕЛО ' + x.caseNo + '/' + x.year, subtitle: x.court + ' · ' + x.instance + ' · ' + det.procedure,
+        sections: [
+          { heading: 'Дело', kv: [['Вид', x.kind], ['Предмет', det.subject], ['Обжалван акт', det.appealedAct], ['Образувано на', fmtDate(det.instituted)], ['Статус', x.status], ['Резултат', x.result], ['Преписка', x.regNo],
+            ['Съдебен състав', [pn.formation, pn.division, pn.reporter ? 'докладчик ' + pn.reporter : '', pn.chair ? 'председател ' + pn.chair : '', pn.members ? 'членове ' + pn.members : '', pn.prosecutor ? 'прокурор ' + pn.prosecutor : ''].filter(Boolean).join('; ')],
+            ['ЕПЕП', [ep.access ? 'достъп – ' + ep.access : '', ep.eserve ? 'електронни съобщения' : '', ep.url].filter(Boolean).join('; ')]] },
+          det.parties.length ? { heading: 'Страни', table: { head: ['Качество', 'Име', 'Представител'], rows: det.parties.map(p => [p.role, p.name, p.rep || '']), widths: [90, '*', 150] } } : null,
+          { heading: 'Заседания', table: { head: ['Дата', 'Час', 'Вид', 'Резултат'], rows: det.hearings.map(p => [fmtDate(p.date), p.time || '', p.kind, p.result || '']), widths: [60, 40, '*', 120] } },
+          { heading: 'Съдебни актове', table: { head: ['Акт', 'Дата', 'Съобщен', 'Резултат', 'Срок'], rows: d.details.acts.map(a => [a.kind + (a.no ? ' № ' + a.no : ''), fmtDate(a.date), fmtDate(a.served), a.outcome || '', a.deadline ? fmtDate(a.deadline.due) + ' – ' + a.deadline.label : (a.remedy || '')]), widths: [80, 55, 55, 110, '*'] } },
+          det.filings.length ? { heading: 'Книжа', table: { head: ['Дата', 'Вид', 'Посока', 'Вх. №'], rows: det.filings.map(f => [fmtDate(f.date), f.kind, f.dir + ' · ' + f.via, f.inNo || '']), widths: [60, '*', 140, 60] } } : null,
+          det.fees.length ? { heading: 'Такси и разноски', table: { head: ['Вид', 'Сума', 'Състояние', 'Дата'], rows: det.fees.map(f => [f.kind, f.amount ? f.amount + ' ' + f.currency : '', f.status, fmtDate(f.date || f.dueDate)]), widths: ['*', 70, 110, 60] } } : null,
+          dls.length ? { heading: 'Срокове', table: { head: ['До', 'Срок', 'Състояние'], rows: dls.map(dl => [fmtDate(dl.date), dl.label, dl.done ? 'изпълнено' : dueText(dl.daysLeft)]), widths: [60, '*', 90] } } : null,
+          det.text ? { heading: 'Бележки', text: det.text } : null
+        ].filter(Boolean)
+      }, generated())), 'Дело ' + x.caseNo + '-' + x.year + '.pdf');
+    } catch (e) { toast(e.message); }
+  };
+
+  const open = d.deadlines.filter(dl => !dl.done && dl.kind !== 'Заседание' && dl.daysLeft >= 0)[0];
+  const nextH = d.deadlines.filter(dl => dl.kind === 'Заседание')[0];
+  setView(
+    head(courtShort(x), h('span', { class: 'pill' }, x.status), h('span', { class: 'pill info' }, det.procedure),
+      edit ? h('button', { class: 'btn', onclick: () => courtDialog(Object.assign({}, x, { instituted: det.instituted, subject: det.subject, appealedAct: det.appealedAct, interest: det.interest, note: det.text }), reload) }, 'Основни данни') : null,
+      h('button', { class: 'btn primary', onclick: report }, 'Справка (PDF)')),
+    h('p', { class: 'small muted mb-12' }, h('a', { href: '#/courts' }, '← Всички дела'), x.regNo ? [' · преписка ', h('a', { href: (/^П-/.test(x.regNo) ? '#/request/' : '#/case/') + encodeURIComponent(x.regNo) }, x.regNo)] : null),
+    h('div', { class: 'tiles' },
+      h('div', { class: 'card tile' }, h('b', null, nextH ? fmtDate(nextH.date) : '—'), h('span', { class: 'muted' }, 'Следващо заседание' + (nextH && nextH.time ? ' · ' + nextH.time : ''))),
+      h('div', { class: 'card tile ' + (open && open.daysLeft <= 3 ? 'warn' : '') }, h('b', null, open ? fmtDate(open.date) : '—'), h('span', { class: 'muted' }, open ? open.label : 'Няма текущ срок')),
+      h('div', { class: 'card tile' }, h('b', null, det.acts.length), h('span', { class: 'muted' }, 'Съдебни акта')),
+      h('div', { class: 'card tile' }, h('b', null, money(tt.paid)), h('span', { class: 'muted' }, 'Платени такси и разноски'))),
+    h('div', { class: 'split' },
+      h('div', { class: 'stack' },
+        h('section', { class: 'card stack' }, h('h2', null, 'Дело'), kv([
+          ['Съд', x.court], ['Инстанция', x.instance], ['Процесуален ред', det.procedure === 'АПК' ? 'Административнопроцесуален кодекс' : 'Граждански процесуален кодекс'],
+          ['Вид производство', x.kind], ['Предмет', det.subject], ['Обжалван акт', det.appealedAct], ['Образувано на', det.instituted ? fmtDate(det.instituted) : ''],
+          ['Материален интерес', det.interest], ['Резултат', x.result], ['Бележки', det.text], ['Въведено', fmtTime(x.at) + ' от ' + userName(x.by)]])),
+        hearings, acts, filings, fees),
+      h('div', { class: 'stack' }, deadlines, epep, panel, parties, history)));
 }
 
 /* ---------- адресати ---------- */
@@ -1557,7 +1826,7 @@ async function requestView(regNo) {
     canLock ? h('button', { class: 'btn sm', onclick: async () => { try { await api('req.lock', { regNo: r.regNo, locked: !locked }); reload(); } catch (e) { toast(e.message); } } }, locked ? 'Отключи' : 'Заключи') : null);
   const courtCard = h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Съдебни дела'), me.perms.courts ? h('button', { class: 'btn sm', onclick: () => courtDialog({ regNo: r.regNo, kind: r.status === 'Мълчалив отказ' ? 'Жалба срещу мълчалив отказ' : 'Жалба срещу решение' }, reload) }, 'Добави дело') : null),
     d.courts.length ? h('ul', { class: 'list-plain' }, d.courts.map(x => h('li', null, h('span', null, x.court.replace('Административен съд – ', 'АС '), ' № ', x.caseNo, '/', x.year, h('br'), h('span', { class: 'small muted' }, x.status + (x.nextHearing ? ' · заседание ' + fmtDate(x.nextHearing) : ''))),
-      me.perms.courts ? h('button', { class: 'btn sm', onclick: () => courtDialog(x, reload) }, 'Промени') : null))) : h('p', { class: 'empty' }, 'Няма дела.'));
+      h('a', { class: 'btn sm', href: '#/court/' + x._id }, 'Отвори')))) : h('p', { class: 'empty' }, 'Няма дела.'));
 
   /* документи */
   const docRows = d.docs.map(x => h('tr', null,
@@ -2418,6 +2687,7 @@ async function route() {
     case 'case': return !can('inReg') ? noAccess('inReg') : parts[1] === 'new' ? newCaseView() : caseView(parts[1]);
     case 'calendar': return calendarView(query);
     case 'courts': return courtsView();
+    case 'court': return courtPage(parts[1]);
     case 'addressees': return addresseesView();
     case 'departments': return departmentsView();
     case 'users': return can('users') ? usersView() : noAccess('users');

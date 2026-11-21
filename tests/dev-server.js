@@ -48,7 +48,8 @@ async function seed() {
   const u = await auth.findUser(app, 'admin');
   await env.__store.patch('users', u._id, Object.assign(await auth.setPassword(app, await preHash('admin', 'admin-parola-123')), { inviteHash: '', inviteExp: '' }));
   const ctx = { username: 'admin', name: 'Суперадминистратор', role: 'Суперадминистратор', admin: true, super: true, access: '*', perms: auth.permsOf(u) };
-  const { caseCreate, courtSave } = await import('../worker/src/cases.js');
+  const { caseCreate } = await import('../worker/src/cases.js');
+  const { courtSave } = await import('../worker/src/courts.js');
   const base = { kind: 'Достъп до обществена информация', channel: 'Писмено', applicantType: 'Гражданин' };
   const day = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
   await caseCreate(Object.assign({}, base, { regDate: day(20), applicantName: 'Иван Петров', applicantEmail: 'ivan@example.org', subject: 'Договори за почистване за 2025 г.', owner: 'admin' }), ctx, app);

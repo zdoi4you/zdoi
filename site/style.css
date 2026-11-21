@@ -394,3 +394,17 @@ dialog { border-radius: 16px; box-shadow: var(--shadow-lg); padding: 22px 24px; 
   .cal-hol { display: none; }
 }
 .list-plain li > .pill { align-self: center; }
+
+/* съдебни дела */
+.row-link { cursor: pointer; }
+.row-link:hover td { background: color-mix(in srgb, var(--soft) 45%, transparent); }
+tr.upcoming td:first-child { border-left: 3px solid var(--accent); }
+td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fee-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.fee-box { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.fee-box b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.fee-box.ok b { color: var(--ok); } .fee-box.warn b { color: var(--warn); } .fee-box.bad b { color: var(--bad); }
+.dl-list li { align-items: flex-start; }
+.dl-list li.done { opacity: .6; }
+.stack-r { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+td .actions { flex-wrap: nowrap; }

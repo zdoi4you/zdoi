@@ -21,6 +21,7 @@ import * as oauth from './oauth.js';
 import * as acme from './acme.js';
 import * as kep from './kep.js';
 import * as persons from './persons.js';
+import * as courts from './courts.js';
 import { ROLE_SUPER, isAdminRole } from './config.js';
 import { SCHEMA_VER } from './schema.js';
 
@@ -57,9 +58,11 @@ export const ACTIONS = {
   'case.assign': { auth: 'user', perm: ['inReg', 'inRegEdit'], fn: cases.caseAssign },
   'case.lock': { auth: 'user', perm: ['inReg', 'inRegEdit', 'lock'], fn: cases.caseLock },
   'case.comment': { auth: 'user', perm: ['inReg', 'comment'], fn: cases.caseComment },
-  'court.list': { auth: 'user', fn: cases.courtList },
-  'court.save': { auth: 'user', perm: 'courts', fn: cases.courtSave },
-  'court.delete': { auth: 'user', perm: 'courts', fn: cases.courtDelete },
+  'court.list': { auth: 'user', fn: courts.courtList },
+  'court.get': { auth: 'user', fn: courts.courtGet },
+  'court.save': { auth: 'user', perm: 'courts', fn: courts.courtSave },
+  'court.part': { auth: 'user', perm: 'courts', fn: courts.courtPart },
+  'court.delete': { auth: 'user', perm: 'courts', fn: courts.courtDelete },
   'addressee.list': { auth: 'user', fn: cases.addresseeList },
   'addressee.save': { auth: 'user', perm: 'addressees', fn: cases.addresseeSave },
   'addressee.delete': { auth: 'user', perm: 'addressees', fn: cases.addresseeDelete },

@@ -11,6 +11,7 @@ import { audit, mail, insertUnique, setting, setSetting } from './core.js';
 import { SCHEMA } from './schema.js';
 import { notifyOf } from './auth.js';
 import { usersBrief, assignCheck } from './users.js';
+import { courtView } from './courts.js';
 import { getMailbox, plusOf, mailboxAddress, fromB64 } from './mailbox.js';
 import { REG_BASIS, allPersons, personOf, codeOf, orgProfile, boxOf, regNoFor, outNoFor, tagFor, allowedCodes, saveDefaultProfile } from './persons.js';
 
@@ -140,7 +141,7 @@ export async function reqGet(d, ctx, app) {
     replyTo: plusOf(box, r.tag || tagOf(r.regNo)), mailbox: box,
     docs: docs.map(x => Object.assign(view(x), { payload: safeJson(x.payload) })).sort(byDesc('at')),
     mail: mails.map(mailView).sort(byDesc('at')), events: events.map(view).reverse(),
-    courts: courts.filter(x => x.regNo === r.regNo).map(view)
+    courts: courts.filter(x => x.regNo === r.regNo).map(x => courtView(x))
   };
 }
 
