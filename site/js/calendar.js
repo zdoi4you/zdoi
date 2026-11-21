@@ -52,3 +52,37 @@ export function termMonths(startIso, months) {
 }
 
 export const daysBetween = (fromIso, toIso) => Math.round((parseIso(toIso) - parseIso(fromIso)) / DAY_MS);
+
+/* наименования на празниците (и на почивните дни за отработване) за деня – за показване в интерфейса */
+const HOLIDAY_NAMES = { '01-01': 'Нова година', '03-03': 'Ден на Освобождението', '05-01': 'Ден на труда', '05-06': 'Гергьовден',
+  '05-24': 'Ден на светите Кирил и Методий', '09-06': 'Ден на Съединението', '09-22': 'Ден на Независимостта',
+  '12-24': 'Бъдни вечер', '12-25': 'Рождество Христово', '12-26': 'Рождество Христово' };
+export function holidayName(iso) {
+  const d = parseIso(iso);
+  if (!d) return '';
+  const y = d.getUTCFullYear(), key = dateKey(d);
+  if (!holidays(y)[key]) return '';
+  const e = orthodoxEaster(y), off = Math.round((d - e) / DAY_MS);
+  if (off >= -2 && off <= 1) return ['Разпети петък', 'Велика събота', 'Великден', 'Великден'][off + 2];
+  return HOLIDAY_NAMES[key.slice(5)] || 'почивен ден (отработване на празник)';
+}
+
+/* за деня: { workday, label } – „работен ден“, „събота“, „неделя“ или името на празника */
+export function dayInfo(iso) {
+  const d = parseIso(iso);
+  if (!d) return { workday: false, label: '' };
+  const h = holidayName(iso);
+  if (h) return { workday: false, label: /^почивен/.test(h) ? h : 'празник: ' + h };
+  const w = d.getUTCDay();
+  if (w === 6) return { workday: false, label: 'събота – неработен ден' };
+  if (w === 0) return { workday: false, label: 'неделя – неработен ден' };
+  return { workday: true, label: 'работен ден' };
+}
+
+/* следващият работен ден след дадената дата (или същата, ако orSame и е работен) */
+export function nextWorkday(iso, orSame) {
+  let d = parseIso(iso);
+  if (!orSame) d = addDays(d, 1);
+  while (!isWorkday(d)) d = addDays(d, 1);
+  return dateKey(d);
+}

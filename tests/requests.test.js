@@ -223,3 +223,42 @@ test('известие от ССЕВ по имейл се разпределя �
   assert.equal(inbox.mail.length, 1);
   assert.equal(inbox.mail[0].channel, 'Имейл');
 });
+
+test('насрочено писмо: изпраща се от Cron в избрания момент; отмяна; неуспех при липсващ PDF', async () => {
+  const { env, admin, box } = await setupReq();
+  const { sendScheduled } = await import('../worker/src/requests.js');
+  const { stamp } = await import('../worker/src/util.js');
+  const c = await admin.call('req.create', reqData());
+  const d1 = await admin.call('doc.reserve', { regNo: c.regNo, kind: 'Заявление', payload: {} });
+  await admin.call('doc.file', { outNo: d1.outNo, pdf: PDF });
+  const base = { regNo: c.regNo, to: 'obshtina@example.org', subject: '[' + c.regNo + '] Заявление', text: 'Приложено', docs: [d1.outNo] };
+  assert.equal((await admin.call('mail.send', Object.assign({}, base, { sendAt: '2020-01-01T09:00' }))).error, 'date');
+  const later = stamp(new Date(Date.now() + 3 * 864e5)).slice(0, 16);
+  const s = await admin.call('mail.send', Object.assign({}, base, { sendAt: later }));
+  assert.equal(s.scheduled, true);
+  assert.equal(box.sent.length, 0);
+  let g = await admin.call('req.get', { regNo: c.regNo });
+  assert.equal(g.mail[0].direction, 'Насрочена');
+  assert.equal(g.request.status, 'Чернова');
+  const app = makeApp(env, env.__store, env.__kv, null);
+  // още не е дошъл моментът
+  assert.equal((await sendScheduled(app)).due, 0);
+  // моментът настъпва
+  const row = (await env.__store.list('mail', { direction: 'Насрочена' }))[0];
+  await env.__store.patch('mail', row._id, { at: stamp(new Date(Date.now() - 60000)) });
+  const run = await sendScheduled(app);
+  assert.equal(run.sent, 1);
+  assert.equal(box.sent.length, 1);
+  g = await admin.call('req.get', { regNo: c.regNo });
+  assert.equal(g.request.status, 'Изпратено');
+  assert.deepEqual(g.mail.map(m => m.direction), ['Изходяща']);
+  // отмяна
+  const s2 = await admin.call('mail.send', Object.assign({}, base, { docs: [], sendAt: later }));
+  assert.equal((await admin.call('mail.cancel', { id: s2.id })).ok, true);
+  assert.equal((await admin.call('mail.cancel', { id: s2.id })).error, 'notfound');
+  // неуспех: документът е изтрит преди момента – писмото остава „Неизпратена“ с бележка
+  const s3 = await admin.call('mail.send', Object.assign({}, base, { sendAt: later }));
+  await env.__store.patch('mail', s3.id, { at: stamp(new Date(Date.now() - 60000)), docOutNo: 'ЗДОИ-2026-9999' });
+  assert.equal((await sendScheduled(app)).failed, 1);
+  assert.equal((await env.__store.get('mail', s3.id)).direction, 'Неизпратена');
+});

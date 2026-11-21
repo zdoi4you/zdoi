@@ -344,46 +344,114 @@ export async function docDownload(d, ctx, app) {
 
 /* ---------- поща ---------- */
 
-export async function mailSend(d, ctx, app) {
-  const r = await findReq(app, d.regNo, ctx);
-  unlocked(r);
-  const list = v => (Array.isArray(v) ? v : String(v || '').split(/[,;\s]+/)).map(x => line(x, 200).toLowerCase()).filter(Boolean);
-  const to = list(d.to), cc = list(d.cc), subject = line(d.subject, 250), text = str(d.text, 30000);
+const mailList = v => (Array.isArray(v) ? v : String(v || '').split(/[,;\s]+/)).map(x => line(x, 200).toLowerCase()).filter(Boolean);
+
+/* проверка на писмото; docs – документите с PDF по преписката */
+async function mailInput(app, r, d) {
+  const to = mailList(d.to), cc = mailList(d.cc), subject = line(d.subject, 250), text = str(d.text, 30000);
   if (!to.length) fail('required', 'Посочете получател.');
   [...to, ...cc].forEach(a => { if (!isEmail(a)) fail('email', 'Невалиден адрес: ' + a); });
   if (!subject || !text) fail('required', 'Попълнете тема и текст.');
   const docs = [];
-  for (const no of (Array.isArray(d.docs) ? d.docs : []).slice(0, 10)) {
+  for (const no of (Array.isArray(d.docs) ? d.docs : String(d.docs || '').split(/,\s*/).filter(Boolean)).slice(0, 10)) {
     const doc = (await app.store.list('docs', { outNo: line(no, 30) }))[0];
     if (!doc || doc.regNo !== r.regNo || !doc.fileId) fail('value', 'Документът ' + no + ' няма запазен PDF.');
     docs.push(doc);
   }
-  const attachments = [];
-  for (const doc of docs) attachments.push({ name: doc.outNo + ' ' + doc.kind + '.pdf', contentType: 'application/pdf', bytes: await app.store.downloadFile(doc.fileId) });
-  let replyToGraphId = '';
+  let reply = null;
   if (d.replyTo) {
-    const m = await app.store.get('mail', str(d.replyTo, 20));
-    if (!m || m.regNo !== r.regNo) fail('notfound', 'Писмото не е намерено.');
-    replyToGraphId = m.graphId;
+    reply = await app.store.get('mail', str(d.replyTo, 20));
+    if (!reply || reply.regNo !== r.regNo) fail('notfound', 'Писмото не е намерено.');
   }
-  // от кутията на лицето на преписката, с адрес за отговор с етикета на преписката
+  return { to, cc, subject, text, docs, reply };
+}
+
+/* изпращане от кутията на лицето с адрес за отговор с етикета на преписката; записва писмото и движи сроковете */
+async function deliver(app, r, m, by) {
+  const attachments = [];
+  for (const doc of m.docs) attachments.push({ name: doc.outNo + ' ' + doc.kind + '.pdf', contentType: 'application/pdf', bytes: await app.store.downloadFile(doc.fileId) });
   const box = boxOf(app, await personOf(app, codeOf(r)));
   const replyTo = plusOf(box, r.tag || tagOf(r.regNo));
   try {
-    await getMailbox(app.env, box).send({ to, cc, subject, text, replyTo, attachments, replyToGraphId });
+    await getMailbox(app.env, box).send({ to: m.to, cc: m.cc, subject: m.subject, text: m.text, replyTo, attachments, replyToGraphId: m.reply ? m.reply.graphId : '' });
   } catch (e) {
     console.error('mail.send: ' + e.message);
     fail('mail', 'Писмото не е изпратено: ' + e.message.slice(0, 200));
   }
   const at = stamp();
   await app.store.insert('mail', {
-    regNo: r.regNo, direction: 'Изходяща', channel: 'Имейл', box, at, from: box, to: to.join(', '), cc: cc.join(', '), subject, body: text,
-    attachments: JSON.stringify(attachments.map(a => ({ name: a.name, size: a.bytes.length }))), docOutNo: docs.map(x => x.outNo).join(', '), by: ctx.username, messageId: 'out:' + r.regNo + ':' + Date.now()
+    regNo: r.regNo, direction: 'Изходяща', channel: 'Имейл', box, at, from: box, to: m.to.join(', '), cc: m.cc.join(', '), subject: m.subject, body: m.text,
+    attachments: JSON.stringify(attachments.map(a => ({ name: a.name, size: a.bytes.length }))), docOutNo: m.docs.map(x => x.outNo).join(', '), by, messageId: 'out:' + r.regNo + ':' + Date.now()
   });
-  await markSent(app, r, docs, at, 'Имейл', to.join(', '));
-  await event(app, r.regNo, ctx.username, 'Изходящо писмо', 'До ' + to.join(', ') + ': ' + subject + (docs.length ? ' (приложени: ' + docs.map(x => x.outNo).join(', ') + ')' : ''));
-  await audit(app, ctx.username, 'Изпратено писмо', r.regNo, to.join(', '));
-  return { sent: true, replyTo };
+  await markSent(app, r, m.docs, at, 'Имейл', m.to.join(', '));
+  await event(app, r.regNo, by, 'Изходящо писмо', 'До ' + m.to.join(', ') + ': ' + m.subject + (m.docs.length ? ' (приложени: ' + m.docs.map(x => x.outNo).join(', ') + ')' : ''));
+  await audit(app, by, 'Изпратено писмо', r.regNo, m.to.join(', '));
+  return replyTo;
+}
+
+/* sendAt (по желание): дата и час в София (ГГГГ-ММ-ДДTЧЧ:ММ) – писмото се изпраща тогава (Cron, до 5 минути по-късно) */
+export async function mailSend(d, ctx, app) {
+  const r = await findReq(app, d.regNo, ctx);
+  unlocked(r);
+  const m = await mailInput(app, r, d);
+  if (d.sendAt) {
+    const mm = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(String(d.sendAt));
+    if (!mm) fail('date', 'Невалидни дата и час на изпращане.');
+    const at = mm[1] + 'T' + mm[2] + ':' + mm[3] + ':00';
+    if (at <= stamp()) fail('date', 'Изберете бъдещ момент за изпращане.');
+    if (at > stamp(new Date(Date.now() + 366 * 864e5))) fail('date', 'Писмото се насрочва до една година напред.');
+    const box = boxOf(app, await personOf(app, codeOf(r)));
+    const rec = await app.store.insert('mail', {
+      regNo: r.regNo, direction: SCHEDULED, channel: 'Имейл', box, at, from: box, to: m.to.join(', '), cc: m.cc.join(', '), subject: m.subject, body: m.text,
+      attachments: '[]', docOutNo: m.docs.map(x => x.outNo).join(', '), ref: m.reply ? m.reply._id : '', by: ctx.username, messageId: 'sched:' + r.regNo + ':' + Date.now()
+    });
+    const when = at.slice(8, 10) + '.' + at.slice(5, 7) + '.' + at.slice(0, 4) + ' ' + at.slice(11, 16);
+    await event(app, r.regNo, ctx.username, 'Насрочено писмо', 'За ' + when + ' до ' + m.to.join(', ') + ': ' + m.subject + (m.docs.length ? ' (приложени: ' + m.docs.map(x => x.outNo).join(', ') + ')' : ''));
+    await audit(app, ctx.username, 'Насрочено писмо', r.regNo, when + ' · ' + m.to.join(', '));
+    return { scheduled: true, at, id: rec._id };
+  }
+  return { sent: true, replyTo: await deliver(app, r, m, ctx.username) };
+}
+
+export const SCHEDULED = 'Насрочена';
+
+/* отмяна на насрочено писмо (още неизпратено) */
+export async function mailCancel(d, ctx, app) {
+  const m = await app.store.get('mail', str(d.id, 20));
+  if (!m || m.direction !== SCHEDULED) fail('notfound', 'Насроченото писмо не е намерено или вече е изпратено.');
+  const r = await findReq(app, m.regNo, ctx);
+  unlocked(r);
+  await app.store.remove('mail', m._id);
+  await event(app, r.regNo, ctx.username, 'Отменено писмо', 'Отменено насрочено писмо до ' + m.to + ': ' + m.subject);
+  return {};
+}
+
+/* Cron: насрочените писма, чийто момент е настъпил; при грешка писмото остава с бележка и отговорникът се уведомява */
+export async function sendScheduled(app) {
+  const now = stamp(), due = (await app.store.list('mail', { direction: SCHEDULED })).filter(m => m.at && m.at <= now);
+  const run = { due: due.length, sent: 0, failed: 0 };
+  for (const s of due) {
+    const r = (await app.store.list('requests', { regNo: s.regNo }))[0];
+    try {
+      if (!r) fail('notfound', 'Преписката не е намерена.');
+      if (r.locked === 'Да') fail('caselocked', 'Преписката е заключена.');
+      const m = await mailInput(app, r, { to: s.to, cc: s.cc, subject: s.subject, text: s.body, docs: s.docOutNo, replyTo: s.ref });
+      // отбелязва се преди изпращането, за да не се изпрати два пъти, ако следващото пускане на Cron дойде по-рано
+      await app.store.patch('mail', s._id, { direction: 'Изпраща се' });
+      await deliver(app, r, m, s.by || 'насрочено');
+      await app.store.remove('mail', s._id);
+      run.sent++;
+    } catch (e) {
+      run.failed++;
+      const note = String(e.message || e).slice(0, 300);
+      await app.store.patch('mail', s._id, { direction: 'Неизпратена', body: (s.body || '') + '\n\n[Неизпратено на ' + now.replace('T', ' ').slice(0, 16) + ': ' + note + ']' });
+      if (r) {
+        await event(app, r.regNo, 'поща', 'Неизпратено писмо', 'Насроченото писмо до ' + s.to + ' не е изпратено: ' + note);
+        await notifyOwner(app, null, r, 'Насроченото писмо „' + s.subject + '“ не е изпратено: ' + note, 'mail');
+      }
+    }
+  }
+  return run;
 }
 
 /* изпратени документи: отбелязва ги и движи сроковете на преписката (заявлението и уточнението) */

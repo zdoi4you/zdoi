@@ -1,6 +1,6 @@
 /* ADM ЗДОИ4You – интерфейс. Всички данни се вмъкват с textContent; innerHTML само за вградените иконки (константи). */
 
-import { term, termMonths, daysBetween } from './calendar.js';
+import { term, termMonths, daysBetween, dayInfo, nextWorkday } from './calendar.js';
 import * as Docs from './docs.js';
 import { addressPicker } from './address.js';
 import * as Kep from './kep.js';
@@ -138,7 +138,26 @@ async function startSession(m) {
   timerId = setInterval(tick, 1000);
 }
 
+/* сега в София: { iso: 'ГГГГ-ММ-ДД', time: 'ЧЧ:ММ', weekday } */
+function sofiaNow(d = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Sofia', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d).map(x => [x.type, x.value]));
+  return { iso: parts.year + '-' + parts.month + '-' + parts.day, time: parts.hour + ':' + parts.minute, weekday: new Intl.DateTimeFormat('bg-BG', { timeZone: 'Europe/Sofia', weekday: 'long' }).format(d) };
+}
+let clockKey = '';
+function drawClock() {
+  const el = $('clock');
+  if (!el) return;
+  const n = sofiaNow(), key = n.iso + n.time;
+  if (key === clockKey && el.childNodes.length) return;
+  clockKey = key;
+  const info = dayInfo(n.iso);
+  el.className = 'clock ' + (info.workday ? 'work' : 'off');
+  el.title = (info.workday ? 'Работен ден' : 'Неработен ден: ' + info.label) + ' (по българския календар с официалните празници)';
+  el.replaceChildren(h('span', { class: 'clock-day' }, n.weekday + ', ' + fmtDate(n.iso)), h('b', null, n.time), h('span', { class: 'clock-kind' }, info.workday ? 'работен ден' : /^празник/.test(info.label) ? info.label : 'почивен ден'));
+}
+
 function tick() {
+  drawClock();
   const el = $('timer'), txt = $('timer-text');
   const left = Math.max(0, Math.round((expAt - Date.now()) / 1000));
   if (el && txt) {
@@ -313,7 +332,7 @@ function shell() {
     h('nav', { id: 'nav', 'aria-label': 'Основно меню' }, NAV().map(([group, items]) => h('div', { class: 'nav-group' },
       h('div', { class: 'nav-title' }, group),
       items.map(([href, text, ico, , key]) => h('a', { href }, icon(ico), h('span', null, text), key ? h('span', { class: 'nav-count', 'data-count': key, hidden: true }) : null))))),
-    h('div', { class: 'side-foot small muted' }, 'Данните се пазят в SharePoint.'));
+    h('div', { id: 'clock', class: 'clock', role: 'status' }));
   const scrim = h('div', { class: 'scrim', onclick: () => document.body.classList.remove('nav-open') });
 
   const newMenu = me.perms.casesEdit ? dropdown(h('button', { class: 'btn primary sm' }, icon('plus'), h('span', { class: 'hide-sm' }, 'Ново'), icon('chevron', 'sm')),
@@ -1331,14 +1350,20 @@ async function requestView(regNo) {
       h('button', { class: 'btn sm', onclick: () => composeDialog(d, {}) }, 'Ново писмо'),
       h('button', { class: 'btn sm', title: 'Изпратено през ССЕВ, по пощата, лично в деловодството…', onclick: () => recordDialog(d, 'Изходяща', []) }, 'Отбележи изпратено'),
       h('button', { class: 'btn sm', title: 'Получено по пощата, през ССЕВ, на ръка…', onclick: () => recordDialog(d, 'Входяща', []) }, 'Регистрирай получено')) : null),
-    d.mail.length ? h('div', { class: 'stack' }, d.mail.map(m => h('div', { class: 'msg' + (m.direction === 'Изходяща' ? ' op' : '') },
-      h('div', { class: 'small muted' }, h('span', { class: 'pill ' + (m.direction === 'Входяща' ? 'info' : '') }, m.direction), ' ',
+    d.mail.length ? h('div', { class: 'stack' }, d.mail.map(m => h('div', { class: 'msg' + (m.direction === 'Изходяща' ? ' op' : '') + (PENDING.includes(m.direction) ? ' sched' : '') },
+      h('div', { class: 'small muted' }, h('span', { class: 'pill ' + ({ 'Входяща': 'info', 'Насрочена': 'warn', 'Изпраща се': 'warn', 'Неизпратена': 'bad' }[m.direction] || '') }, m.direction === 'Насрочена' ? '⏰ Насрочено за ' + fmtTime(m.at) : m.direction), ' ',
+      m.direction === 'Насрочена' ? h('span', { class: dayInfo(m.at.slice(0, 10)).workday ? '' : 'warn-text' }, '(' + dayInfo(m.at.slice(0, 10)).label + ') ') : null,
         chanOf(m) ? [h('span', { class: 'pill warn' }, chanOf(m)), ' '] : null,
         whenOf(m.at), ' · ', m.direction === 'Входяща' ? 'от ' + m.from : 'до ' + m.to, m.ref ? ' · ' + m.ref : '', m.docOutNo ? ' · ' + m.docOutNo : '', m.matched ? ' · разпределено: ' + m.matched : ''),
       h('div', null, h('b', null, m.subject || '(без тема)')),
       h('details', null, h('summary', { class: 'small' }, 'Текст'), h('div', { class: 'pre small' }, m.body)),
       m.attachments.length ? h('div', { class: 'attach-chips' }, m.attachments.map((a, i) => a.fileId ? h('button', { class: 'btn sm', onclick: async () => { try { const f = await api('mail.attachment', { id: m._id, index: i }); downloadB64(f.name, f.data, f.contentType); } catch (e) { toast(e.message); } } }, '📎 ' + a.name) : h('span', { class: 'small muted' }, '📎 ' + a.name + (a.skipped ? ' (' + a.skipped + ')' : '')))) : null,
-      edit && m.direction === 'Входяща' && (!m.channel || m.channel === 'Имейл') ? h('div', { class: 'actions mt-8' }, h('button', { class: 'btn sm', onclick: () => composeDialog(d, { reply: m }) }, 'Отговори')) : null))) : h('p', { class: 'empty' }, 'Няма писма.'));
+      edit && m.direction === 'Входяща' && (!m.channel || m.channel === 'Имейл') ? h('div', { class: 'actions mt-8' }, h('button', { class: 'btn sm', onclick: () => composeDialog(d, { reply: m }) }, 'Отговори')) : null,
+      edit && (m.direction === 'Насрочена' || m.direction === 'Неизпратена') ? h('div', { class: 'actions mt-8' }, h('button', { class: 'btn sm danger', onclick: async () => {
+        if (!confirm(m.direction === 'Насрочена' ? 'Да се отмени ли насроченото писмо?' : 'Да се премахне ли неизпратеното писмо?')) return;
+        try { await api('mail.cancel', { id: m._id }); toast('Отменено.'); reload(); } catch (e) { toast(e.message); }
+      } }, m.direction === 'Насрочена' ? 'Отмени' : 'Премахни'),
+        m.direction === 'Неизпратена' ? h('button', { class: 'btn sm', onclick: () => composeDialog(d, {}) }, 'Ново писмо') : null) : null))) : h('p', { class: 'empty' }, 'Няма писма.'));
 
   const comment = h('form', null, field({ k: 'text', label: 'Вътрешен коментар', type: 'textarea', rows: 2, max: 4000, req: true, full: true }), h('div', { class: 'actions mt-8' }, h('button', { type: 'submit', class: 'btn sm primary' }, 'Добави')));
   onSubmit(comment, async v => { await api('req.comment', { regNo: r.regNo, text: v.text }); toast('Добавено.'); reload(); });
@@ -1736,21 +1761,48 @@ function composeDialog(d, { docs = [], reply = null } = {}) {
       : `Уважаеми господин/госпожо,\n\n` + sign;
   const docBoxes = withFile.length ? h('div', { class: 'field full' }, h('span', null, 'Прикачи документи (PDF)'),
     withFile.map(x => h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'doc_' + x.outNo, checked: docs.includes(x.outNo) }), h('span', null, x.outNo + ' – ' + x.kind + (x.sentAt ? ' (изпратен ' + fmtDate(x.sentAt) + ')' : ''))))) : null;
-  formDialog(reply ? 'Отговор' : 'Писмо по ' + r.regNo, [
+  // кога: веднага или насрочено (дата и час в София); показва дали денят е работен
+  const now = sofiaNow();
+  const whenSel = h('select', { name: '_when', 'aria-label': 'Кога' }, h('option', { value: 'now' }, 'Веднага'), h('option', { value: 'later' }, 'Насрочи за дата и час'));
+  const nextWd = nextWorkday(now.iso);
+  const atIn = h('input', { type: 'datetime-local', name: '_at', min: now.iso + 'T' + now.time, value: nextWd + 'T09:00', step: 300 });
+  const dayNote = h('small', { class: 'day-note' });
+  const quick = (label, iso, hm) => h('button', { type: 'button', class: 'btn sm', onclick: () => { atIn.value = iso + 'T' + hm; syncWhen(); } }, label);
+  const atBox = h('div', { class: 'stack when-box', hidden: true },
+    h('label', { class: 'field' }, h('span', null, 'Дата и час на изпращане (софийско време)'), atIn, dayNote),
+    h('div', { class: 'actions' }, quick('Следващия работен ден 9:00', nextWd, '09:00'), quick('След 3 работни дни 9:00', nextWorkday(nextWorkday(nextWd)), '09:00'),
+      h('button', { type: 'button', class: 'btn sm', onclick: () => { const dd = (atIn.value || '').slice(0, 10); if (dd) { atIn.value = nextWorkday(dd, true) + 'T' + ((atIn.value || '').slice(11, 16) || '09:00'); syncWhen(); } } }, 'Към работен ден')),
+    h('p', { class: 'small muted' }, 'Писмото се записва като „Насрочено“ в кореспонденцията и се изпраща автоматично в избрания момент (до 5 минути по-късно). Може да се отмени дотогава. Сроковете тръгват от действителното изпращане.'));
+  const syncWhen = () => {
+    const later = whenSel.value === 'later';
+    atBox.hidden = !later;
+    const btn = dlgEl && dlgEl.querySelector('button[type=submit]');
+    if (btn) btn.textContent = later ? 'Насрочи' : 'Изпрати';
+    const v = atIn.value || '', info = v ? dayInfo(v.slice(0, 10)) : null;
+    dayNote.textContent = info ? (info.workday ? '✔ ' : '⚠ ') + fmtDate(v.slice(0, 10)) + ' е ' + info.label + (info.workday ? '' : ' – субектът ще го получи в неработен ден; сроковете не се влияят от това.') : '';
+    dayNote.className = 'day-note ' + (info && !info.workday ? 'warn-text' : 'muted');
+  };
+  whenSel.addEventListener('change', syncWhen); atIn.addEventListener('input', syncWhen);
+  let dlgEl = null;
+  dlgEl = formDialog(reply ? 'Отговор' : 'Писмо по ' + r.regNo, [
     { k: 'to', label: 'До', req: true, max: 600, full: true, hint: 'Няколко адреса се разделят със запетая.' },
     { k: 'cc', label: 'Копие', max: 600, full: true },
     { k: 'subject', label: 'Тема', req: true, max: 250, full: true },
     { k: 'text', label: 'Текст', type: 'textarea', rows: 12, req: true, max: 30000, full: true }
   ], { to: fromAddr, subject, text }, 'Изпрати', async (v, form) => {
     const chosen = withFile.filter(x => form.elements['doc_' + x.outNo] && form.elements['doc_' + x.outNo].checked).map(x => x.outNo);
-    const res = await api('mail.send', { regNo: r.regNo, to: v.to, cc: v.cc, subject: v.subject, text: v.text, docs: chosen, replyTo: reply ? reply._id : '' });
-    toast('Изпратено. Отговорите идват на ' + res.replyTo + '.');
+    const later = whenSel.value === 'later';
+    if (later && !atIn.value) throw new Error('Изберете дата и час на изпращане.');
+    const res = await api('mail.send', { regNo: r.regNo, to: v.to, cc: v.cc, subject: v.subject, text: v.text, docs: chosen, replyTo: reply ? reply._id : '', sendAt: later ? atIn.value : '' });
+    toast(res.scheduled ? 'Насрочено за ' + fmtTime(res.at) + '.' : 'Изпратено. Отговорите идват на ' + res.replyTo + '.');
     requestView(r.regNo);
-  }, { wide: true, extra: h('div', { class: 'stack mt-12' }, docBoxes, h('p', { class: 'note' }, 'Изпраща се от ' + d.mailbox + ' с адрес за отговор ' + d.replyTo + '. Копие остава в „Изпратени“ на кутията.')) });
+  }, { wide: true, extra: h('div', { class: 'stack mt-12' }, docBoxes, h('div', { class: 'field' }, h('span', null, 'Кога да се изпрати'), whenSel), atBox, h('p', { class: 'note' }, 'Изпраща се от ' + d.mailbox + ' с адрес за отговор ' + d.replyTo + '. Копие остава в „Изпратени“ на кутията.')) });
 }
 
 /* ---------- изпращане и получаване извън имейла: ССЕВ, поща, лично в деловодството ---------- */
 
+/* писма, които още не са изпратени (насрочени, в процес или неуспешни) */
+const PENDING = ['Насрочена', 'Изпраща се', 'Неизпратена'];
 const CHANNEL_SHORT = { 'Сигурно електронно връчване': 'ССЕВ', 'Поща': 'Поща', 'Куриер': 'Куриер', 'На място': 'Лично в деловодството', 'Платформа за достъп (чл. 15в)': 'Платформа', 'Имейл': 'Имейл (друг адрес)' };
 const CHANNEL_LABEL = { 'На място': 'Лично в деловодството (на място)', 'Имейл': 'Имейл от друг адрес (не през системата)', 'Сигурно електронно връчване': 'ССЕВ – Система за сигурно електронно връчване' };
 /* въведените ръчно записи имат само дата (без час) */
@@ -1856,7 +1908,7 @@ async function reqDossier(d) {
           ['Решението е получено (връчено) на', fmtDate(r.servedAt)], ['Срок за обжалване', r.appealBy ? fmtDate(r.appealBy) : ''],
           ['Обжалвано', r.appealed === 'Да' ? 'Да' + (r.appealNote ? ' – ' + r.appealNote : '') : 'Не']] },
         { heading: 'Документи', table: { head: ['Изх. №', 'Вид', 'Дата', 'Изпратен на', 'Начин и получател'], rows: d.docs.slice().reverse().map(x => [x.outNo, x.kind, fmtDate(x.date), x.sentAt ? whenOf(x.sentAt) : 'неизпратен', x.sentTo || '']), widths: [80, 60, 55, 70, '*'] } },
-        { heading: 'Кореспонденция (връчвания и отговори)', blocks: d.mail.slice().sort((a, b) => String(a.at).localeCompare(String(b.at))).map(m => ({
+        { heading: 'Кореспонденция (връчвания и отговори)', blocks: d.mail.filter(m => !PENDING.includes(m.direction)).sort((a, b) => String(a.at).localeCompare(String(b.at))).map(m => ({
           head: `${m.direction} · ${chanOf(m) || 'Имейл'} · ${whenOf(m.at)} · от ${m.from} до ${m.to}${m.ref ? ' · ' + m.ref : ''} · ${m.subject}`,
           text: (m.body || '').slice(0, 6000) + (m.attachments.length ? '\nПрикачени: ' + m.attachments.map(a => a.name).join(', ') : '') + (m.docOutNo ? '\nДокументи: ' + m.docOutNo : '') })) },
         { heading: 'Съдебни дела', table: { head: ['Съд', 'Дело', 'Вид', 'Статус', 'Заседание'], rows: d.courts.map(x => [x.court, x.caseNo + '/' + x.year, x.kind, x.status, fmtDate(x.nextHearing)]), widths: ['*', 50, 90, 70, 60] } },

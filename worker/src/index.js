@@ -88,6 +88,7 @@ export const ACTIONS = {
   'kep.status': { auth: 'admin', fn: kep.kepStatus },
   'kep.renew': { auth: 'admin', fn: kep.kepRenew },
   'mail.send': { auth: 'user', perm: 'casesEdit', fn: reqs.mailSend },
+  'mail.cancel': { auth: 'user', perm: 'casesEdit', fn: reqs.mailCancel },
   'mail.record': { auth: 'user', perm: 'casesEdit', big: true, fn: reqs.mailRecord },
   'mail.inbox': { auth: 'user', fn: reqs.mailInbox },
   'mail.assign': { auth: 'user', perm: 'casesEdit', fn: reqs.mailAssign },
@@ -261,7 +262,7 @@ export default {
     const { store, kv } = services(env);
     const app = makeApp(env, store, kv, null);
     // пощата на приемната – на всеки 5 минути; напомнянията – веднъж на ден след 8:00 ч.
-    ctx.waitUntil(upgradeSchema(app).then(() => reqs.pollMail(app)).then(r => console.log('поща', JSON.stringify(r)))
+    ctx.waitUntil(upgradeSchema(app).then(() => reqs.sendScheduled(app)).then(r => { if (r.due) console.log('насрочени писма', JSON.stringify(r)); }, e => console.error('насрочени писма: ' + e.message)).then(() => reqs.pollMail(app)).then(r => console.log('поща', JSON.stringify(r)))
       .then(() => cases.remindDeadlines(app)).then(r => console.log('напомняния', JSON.stringify(r)))
       .then(() => acme.ensureCert(app)).then(r => console.log('сертификат за КЕП', JSON.stringify(r))));
   }
