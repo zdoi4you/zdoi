@@ -43,6 +43,12 @@ export async function allPersons(app) {
       return [personView(await seedPerson(app))];
     }
     if (!rows.some(r => r.isDefault === 'Да')) rows.unshift(await app.store.insert('persons', Object.assign(await seedPerson(app), { by: 'система', at: stamp() })));
+    // старите преписки са без код на лице и принадлежат на Сдружението, затова кодът му е винаги 'zdoi'
+    for (const r of rows.filter(x => x.isDefault === 'Да' && x.code !== DEFAULT_CODE)) {
+      console.error('persons: кодът на лицето по подразбиране е „' + r.code + '“ – поправя се на ' + DEFAULT_CODE);
+      await app.store.patch('persons', r._id, { code: DEFAULT_CODE });
+      r.code = DEFAULT_CODE;
+    }
     return rows.sort((a, b) => (b.isDefault === 'Да') - (a.isDefault === 'Да') || Number(a._id) - Number(b._id)).map(personView);
   });
 }
