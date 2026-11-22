@@ -104,6 +104,113 @@ export function mapMonRows(data) {
   }).sort((a, b) => a.name.localeCompare(b.name, 'bg'));
 }
 
+/* ---------- регистър на институциите на МОН (ri-api.mon.bg) ---------- */
+
+/*
+ * Публичният API на регистъра (същият, който ползва ri.mon.bg/active-institutions):
+ *   POST /data/get/public-register { isRIActive: 1 }   – активните институции (код по НЕИСПУО, наименование, област, община…)
+ *   POST /data/get/institution { instid, procID }       – подробно: БУЛСТАТ, адрес, п.к., директор, имейл, телефон, сайт
+ *   POST /data/get/region | municipality | town | …     – номенклатури
+ * Подробностите се теглят постепенно (по няколко на всяко пускане на Cron, повторно след 30 дни), за да не се натоварва
+ * регистърът. В регистъра кодът е „bulstat“ – записва се като код по БУЛСТАТ.
+ */
+const RI = 'https://ri-api.mon.bg';
+const RIK = { list: 'reg:ri:list', nom: 'reg:ri:nom', det: 'reg:ri:det', meta: 'reg:ri:meta' };
+const RI_UA = 'ADM-ZDOI4You/1.0 (+https://adm.zdoi.eu)';
+const RI_STALE = 30 * 864e5;
+
+async function riPost(env, path, body) {
+  const f = env.__ri || fetch;
+  const r = await fetchRetry(f, RI + path, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': RI_UA }, body: JSON.stringify(body || {}) },
+    'Регистърът на институциите на МОН (ri-api.mon.bg)', env.__ri ? [] : undefined);
+  const j = await r.json().catch(() => null);
+  if (!j || j.status !== 1) fail('external', 'Регистърът на институциите на МОН върна неочакван отговор.');
+  return j.data;
+}
+
+/* списъкът на активните институции и номенклатурите (номенклатурите – веднъж на 30 дни) */
+export async function riRefreshList(app) {
+  const data = await riPost(app.env, '/data/get/public-register', { isRIActive: 1 });
+  const list = ((data && data.publicInstitutions) || []).map(x => ({ id: String(x.instid), proc: x.procID, name: t(x.name), r: x.region, m: x.municipality, tw: x.town, dt: x.detailedSchoolType, st: x.transformType }))
+    .filter(x => /^\d+$/.test(x.id) && x.name);
+  if (list.length < 500) fail('external', 'Регистърът на институциите върна твърде малко записи (' + list.length + ').');
+  let nom = JSON.parse((await app.kv.get(RIK.nom)) || 'null');
+  if (!nom || Date.now() - Date.parse(nom.at + 'Z') > RI_STALE) {
+    const get = p => riPost(app.env, '/data/get/' + p, {}).catch(() => []);
+    const [rg, mu, tw, dt, st] = await Promise.all(['region', 'municipality', 'town', 'detailedSchoolTypes', 'public-transformTypes'].map(get));
+    const map = (a, keep) => { const o = {}; (Array.isArray(a) ? a : []).forEach(x => { if (x && (!keep || keep.has(x.code)) && (o[x.code] === undefined || x.isValid)) o[x.code] = t(x.label); }); return o; };
+    nom = { at: stamp(), r: map(rg), m: map(mu), t: map(tw, new Set(list.map(x => x.tw))), d: map(dt), s: map(st) };
+    await app.kv.put(RIK.nom, JSON.stringify(nom));
+  }
+  await app.kv.put(RIK.list, JSON.stringify(list));
+  const meta = JSON.parse((await app.kv.get(RIK.meta)) || '{}');
+  await app.kv.put(RIK.meta, JSON.stringify(Object.assign(meta, { listAt: stamp(), count: list.length })));
+  return list;
+}
+
+/* подробностите (БУЛСТАТ, имейл…) за n институции без данни или с данни по-стари от 30 дни; ids – точно тези */
+export async function riDetailsBatch(app, n = 25, ids = null) {
+  const list = JSON.parse((await app.kv.get(RIK.list)) || '[]');
+  if (!list.length) return { skipped: 'няма списък' };
+  const det = JSON.parse((await app.kv.get(RIK.det)) || '{}');
+  const now = Date.now(), stale = x => !det[x.id] || now - det[x.id].ts > RI_STALE;
+  const todo = (ids ? list.filter(x => ids.includes(x.id) && stale(x)) : list.filter(stale)).slice(0, n);
+  let ok = 0, errors = 0;
+  for (const x of todo) {
+    try {
+      const d = ((await riPost(app.env, '/data/get/institution', { instid: Number(x.id), procID: x.proc })) || [])[0] || {};
+      const b = String(d.bulstat || '').replace(/\D/g, ''), e = t(d.email).toLowerCase().split(/[;,\s]+/)[0] || '';
+      det[x.id] = { b: /^(\d{9}|\d{13})$/.test(b) ? b : '', e: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : '', p: t(d.phoneNumber), w: t(d.website), dir: t(d.staffDirector),
+        a: t(d.settlementAddress), z: t(d.settlementPostCode), ts: now };
+      ok++;
+    } catch (err) {
+      errors++;
+      if (errors >= 3) break; // регистърът не отговаря – следващото пускане ще опита отново
+    }
+  }
+  if (ok) await app.kv.put(RIK.det, JSON.stringify(det));
+  const left = list.filter(stale).length; // вече без току-що изтеглените
+  const meta = JSON.parse((await app.kv.get(RIK.meta)) || '{}');
+  await app.kv.put(RIK.meta, JSON.stringify(Object.assign(meta, { detAt: stamp(), withDetails: Object.keys(det).length, left: Math.max(0, left) })));
+  return { ok, errors, left: Math.max(0, left) };
+}
+
+/* Cron: списъкът – веднъж на ден; подробностите – на всяко пускане по няколко, докато не станат пълни и актуални */
+export async function riTick(app, now = new Date(), batch = 25) {
+  const key = 'reg:ri:checked:' + todayIso(now);
+  const out = {};
+  if (!(await app.kv.get(key)) || !(await app.kv.get(RIK.list))) {
+    try { out.list = (await riRefreshList(app)).length; await app.kv.put(key, '1', { expirationTtl: 2 * 86400 }); } catch (e) { out.listError = e.message; }
+  }
+  try { Object.assign(out, await riDetailsBatch(app, batch)); } catch (e) { out.detError = e.message; }
+  return out;
+}
+
+/* обединява отворените данни (всички, вкл. детските градини) с регистъра (БУЛСТАТ, имейл, телефон…) */
+async function withRegister(app, items) {
+  const [list, nom, det] = await Promise.all([RIK.list, RIK.nom, RIK.det].map(async k => JSON.parse((await app.kv.get(k)) || 'null')));
+  if (!list || !list.length) return items;
+  const n = nom || { r: {}, m: {}, t: {}, d: {}, s: {} }, d = det || {};
+  const byCode = new Map(items.map(x => [x.code, x]));
+  for (const x of list) {
+    const e = d[x.id] || {}, base = byCode.get(x.id);
+    const town = n.t[x.tw] || '';
+    const address = e.a || e.z ? [e.z ? 'п.к. ' + e.z : '', town, e.a].filter(Boolean).join(', ') : '';
+    const v = base ? Object.assign({}, base) : { key: 'mon:' + x.id, code: x.id, name: x.name, kind: schoolKind(x.name), oblast: n.r[x.r] || '', muni: n.m[x.m] || '', address: town, web: '', director: '', eik: '', email: '', phone: '', parent: '' };
+    if (e.b) v.eik = e.b;
+    if (e.e) v.email = e.e;
+    if (e.p) v.phone = e.p;
+    if (e.w && !v.web) v.web = e.w;
+    if (e.dir) v.director = e.dir;
+    if (address) v.address = address;
+    if (n.d[x.dt]) v.type = n.d[x.dt];
+    if (n.s[x.st]) v.status = n.s[x.st];
+    v.ri = true;
+    byCode.set(x.id, v);
+  }
+  return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name, 'bg'));
+}
+
 /* ---------- общо за двата източника ---------- */
 
 const SOURCES = {
@@ -133,11 +240,16 @@ export async function refreshRegistry(app, force, source = 'iisda') {
 async function loadRegistry(app, source = 'iisda') {
   const S = src(source);
   let raw = await app.kv.get(S.key);
-  if (!raw) { await refreshRegistry(app, true, source); raw = (await app.kv.get(S.key)) || '[]'; }
+  if (!raw) {
+    try { await refreshRegistry(app, true, source); } catch (e) { if (source !== 'mon' || !(await app.kv.get(RIK.list))) throw e; }
+    raw = (await app.kv.get(S.key)) || '[]';
+  }
   const items = JSON.parse(raw);
   if (source !== 'mon') return items;
+  // регистърът на институциите (ri-api.mon.bg) дава БУЛСТАТ, имейл и телефон; заредените файлове – само за липсващото
+  const merged = await withRegister(app, items);
   const extra = JSON.parse((await app.kv.get(MON.extra)) || '{}');
-  return items.map(x => { const e = extra[x.code]; return e ? Object.assign({}, x, { eik: e.b || '', email: e.e || '', phone: e.p || '' }) : x; });
+  return merged.map(x => { const e = extra[x.code]; return e ? Object.assign({}, x, { eik: x.eik || e.b || '', email: x.email || e.e || '', phone: x.phone || e.p || '' }) : x; });
 }
 
 /* Cron: веднъж на ден проверява двата набора за нов ресурс */
@@ -174,13 +286,17 @@ export async function registrySearch(d, ctx, app) {
     withEik: source === 'mon' ? all.filter(x => x.eik).length : undefined,
     kinds: d.facets ? [...new Set(all.map(x => x.kind))].sort((a, b) => a.localeCompare(b, 'bg')) : undefined,
     oblasts: d.facets ? [...new Set(all.map(x => x.oblast).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'bg')) : undefined,
-    meta: JSON.parse((await app.kv.get(src(source).meta)) || 'null')
+    meta: JSON.parse((await app.kv.get(src(source).meta)) || 'null'),
+    ri: source === 'mon' ? JSON.parse((await app.kv.get(RIK.meta)) || 'null') : undefined
   };
 }
 
 export async function registryRefresh(d, ctx, app) {
   const source = d.source === 'mon' ? 'mon' : 'iisda';
   const r = await refreshRegistry(app, true, source);
+  if (source === 'mon') {
+    try { await riRefreshList(app); r.ri = await riDetailsBatch(app, 25); } catch (e) { r.riError = e.message; }
+  }
   await audit(app, ctx.username, 'Обновен ' + src(source).label, '', r.name + ' · ' + r.count);
   return r;
 }
@@ -220,6 +336,7 @@ export async function registryImport(d, ctx, app) {
   const keys = (Array.isArray(d.keys) ? d.keys : Array.isArray(d.eiks) ? d.eiks : []).map(x => str(x, 20)).filter(Boolean).slice(0, 40);
   if (!keys.length) fail('required', 'Изберете поне една институция.');
   const code = await addresseeScope(app, ctx, d.person), map = await addresseePersons(app);
+  if (source === 'mon') { try { await riDetailsBatch(app, 40, keys.map(k => k.replace(/\D/g, ''))); } catch (_) { /* без регистъра – с наличните данни */ } }
   const all = await loadRegistry(app, source);
   // само адресатите на това лице – всяко лице има свой списък
   const rows = (await app.store.list('addressees')).filter(a => (map[a._id] || DEFAULT_CODE) === code);

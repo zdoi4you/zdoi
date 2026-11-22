@@ -285,6 +285,8 @@ export default {
       .then(() => courts.epepDaily(app)).then(r => { if (r.checked || r.errors) console.log('ЕПЕП', JSON.stringify(r)); }, e => console.error('ЕПЕП: ' + e.message))
       // регистърът на административните структури (data.egov.bg) – нов ресурс веднъж месечно, проверка веднъж на ден
       .then(() => registry.registryDaily(app)).then(r => { if (r.updated) console.log('регистър', JSON.stringify(r)); }, e => console.error('регистър: ' + e.message))
+      // регистърът на институциите на МОН: списъкът веднъж на ден, подробностите (БУЛСТАТ, имейл) – по 25 на пускане
+      .then(() => registry.riTick(app)).then(r => { if (r.ok || r.list || r.listError || r.detError) console.log('МОН', JSON.stringify(r)); }, e => console.error('МОН: ' + e.message))
       .then(() => acme.ensureCert(app)).then(r => console.log('сертификат за КЕП', JSON.stringify(r))));
   }
 };

@@ -102,3 +102,50 @@ test('външни системи: повторен опит при 403 и яс�
   assert.equal(s.error, 'external');
   assert.match(s.message, /data\.egov\.bg/);
 });
+
+test('регистър на институциите на МОН (ri-api): списък, подробности на порции, БУЛСТАТ и имейл в училищата и адресатите', async () => {
+  const { env, admin } = await ready();
+  const mon = Array.from({ length: 600 }, (_, i) => ({ InstId: 100000 + i, InstName: 'Средно училище "Отворени данни ' + i + '"', First_LastName_dir: 'Стар директор', InstRegName: 'Благоевград', InstMunName: 'Банско', InstTownName: 'Банско', InstAddress: 'ул. 1', InstPostCode: 2770, Website: '' }));
+  env.__egov = fakeEgov([], {}, mon);
+  const list = Array.from({ length: 700 }, (_, i) => ({ instid: 100000 + i, name: 'Средно училище "Регистър ' + i + '"', region: 1, municipality: 1, town: 5, detailedSchoolType: 124, transformType: 5, procID: 10 + i }));
+  const calls = [];
+  env.__ri = async (url, init) => {
+    const path = new URL(url).pathname, body = JSON.parse(init.body || '{}');
+    calls.push(path);
+    const out = data => new Response(JSON.stringify({ status: 1, data }), { headers: { 'Content-Type': 'application/json' } });
+    if (path === '/data/get/public-register') return body.isRIActive === 1 ? out({ publicInstitutions: list }) : new Response('{"status":0}');
+    if (path === '/data/get/region') return out([{ code: 1, label: 'Благоевград' }]);
+    if (path === '/data/get/municipality') return out([{ code: 1, label: 'Банско' }]);
+    if (path === '/data/get/town') return out([{ code: 5, label: 'гр. Банско' }]);
+    if (path === '/data/get/detailedSchoolTypes') return out([{ code: 124, label: 'средно (I - XII клас)', isValid: true }]);
+    if (path === '/data/get/public-transformTypes') return out([{ code: 5, label: 'действаща', isValid: true }]);
+    if (path === '/data/get/institution') return out([{ codeNEISPUO: body.instid, bulstat: String(100000000 + body.instid).slice(-9), email: 'info-' + body.instid + '@edu.mon.bg', phoneNumber: '0749/8' + body.instid, website: 'su.bg', staffDirector: 'Нов директор', settlementAddress: 'ул. "Пирин" 1', settlementPostCode: 2770 }]);
+    return new Response('{"status":0}');
+  };
+  const { riTick } = await import('../worker/src/registry.js');
+  const app = makeApp(env, env.__store, env.__kv, null);
+  const t1 = await riTick(app, new Date('2026-11-23T09:00:00+02:00'), 10);
+  assert.equal(t1.list, 700);
+  assert.equal(t1.ok, 10);
+  assert.equal(t1.left, 690);
+  // второ пускане същия ден: без нов списък, следващите 10
+  const t2 = await riTick(app, new Date('2026-11-23T09:05:00+02:00'), 10);
+  assert.equal(t2.list, undefined);
+  assert.equal(t2.left, 680);
+  // търсенето: БУЛСТАТ, имейл, директор, адрес от регистъра; институциите само в регистъра също излизат
+  const s = await admin.call('registry.search', { source: 'mon', q: '100000' });
+  const x = s.items.find(i => i.code === '100000');
+  assert.equal(x.eik, '100100000');
+  assert.equal(x.email, 'info-100000@edu.mon.bg');
+  assert.equal(x.director, 'Нов директор');
+  assert.equal(x.address, 'п.к. 2770, гр. Банско, ул. "Пирин" 1');
+  assert.equal(x.status, 'действаща');
+  assert.ok((await admin.call('registry.search', { source: 'mon', q: 'Регистър 650' })).items.length === 1);
+  assert.ok(s.ri.withDetails >= 20);
+  // добавяне в адресатите: подробностите на избраното се теглят веднага
+  assert.equal((await admin.call('registry.import', { source: 'mon', keys: ['mon:100650'] })).added, 1);
+  const a = (await admin.call('addressee.list')).addressees.find(z => z.name === 'Средно училище "Регистър 650"');
+  assert.equal(a.eik, '100100650');
+  assert.match(a.regBasis, /БУЛСТАТ/);
+  assert.equal(a.email, 'info-100650@edu.mon.bg');
+});

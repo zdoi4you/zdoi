@@ -1342,7 +1342,7 @@ async function registryView(addressees, tabs, source) {
   const run = async () => {
     const r = await api('registry.search', { source, q: q.value, kind: kind.value, oblast: obl.value, limit: 700 });
     shown = r.items;
-    info.replaceChildren('Намерени: ' + r.total + ' от ' + r.all + ' ' + S.what + '.' + (source === 'mon' ? ' С БУЛСТАТ: ' + (r.withEik || 0) + '.' : ''));
+    info.replaceChildren('Намерени: ' + r.total + ' от ' + r.all + ' ' + S.what + '.' + (source === 'mon' ? ' С БУЛСТАТ и имейл: ' + (r.withEik || 0) + '.' : ''));
     draw();
   };
   const contact = x => [x.email ? h('a', { href: 'mailto:' + x.email }, x.email) : h('span', { class: 'muted' }, 'без имейл'), x.phone ? h('div', { class: 'muted' }, x.phone) : null,
@@ -1350,7 +1350,7 @@ async function registryView(addressees, tabs, source) {
   const draw = () => {
     const head = source === 'mon' ? ['Институция', 'НЕИСПУО / БУЛСТАТ', 'Адрес', 'Имейл, телефон, сайт', ''] : ['Структура', 'ЕИК/БУЛСТАТ', 'Адрес', 'Имейл и телефон', ''];
     body.replaceChildren(table(head, shown.slice(0, 300).map(x => h('tr', null,
-      h('td', null, h('b', null, x.name), h('div', { class: 'small muted' }, x.kind + (x.parent ? ' · към ' + x.parent : '') + (x.director ? ' · директор: ' + x.director : ''))),
+      h('td', null, h('b', null, x.name), h('div', { class: 'small muted' }, (x.type || x.kind) + (x.parent ? ' · към ' + x.parent : '') + (x.director ? ' · директор: ' + x.director : '') + (x.status && x.status !== 'действаща' ? ' · ' + x.status : ''))),
       source === 'mon' ? h('td', { class: 'mono small' }, x.code, h('br'), x.eik ? x.eik : h('span', { class: 'muted' }, 'без БУЛСТАТ')) : h('td', { class: 'mono' }, x.eik || '—'),
       h('td', { class: 'small' }, x.address || '—', x.oblast ? h('div', { class: 'muted' }, 'обл. ' + x.oblast) : null),
       h('td', { class: 'small' }, contact(x)),
@@ -1385,14 +1385,19 @@ async function registryView(addressees, tabs, source) {
     manyPersons() && curPerson() ? h('p', { class: 'small muted mb-4' }, '„Добави“ ги записва в адресатите на ', h('b', null, curPerson().name), '.') : null,
     source === 'mon'
       ? h('div', { class: 'stack mb-12' },
-        h('p', { class: 'small muted' }, 'Училищата, детските градини, центровете за подкрепа за личностно развитие и специализираните обслужващи звена – код по НЕИСПУО, директор, адрес и сайт. Източник: ',
+        h('p', { class: 'small muted' }, 'Училищата, детските градини, центровете за подкрепа за личностно развитие и специализираните обслужващи звена – код по НЕИСПУО, наименование, директор, адрес и сайт. Източник на списъка: ',
           h('a', { href: m.source || 'https://data.egov.bg/data/view/9d72ecff-e079-48a4-bc0a-1312bff178f6', target: '_blank', rel: 'noopener noreferrer' }, 'отворените данни на МОН'),
           m.name ? ' – ' + m.name + ' (заредено ' + fmtTime(m.at) + ').' : '.', ' Обновява се автоматично при нов списък.'),
-        h('div', { class: 'note' }, h('b', null, 'БУЛСТАТ и имейл. '), 'Те не са в отворените данни, а в регистъра на институциите на МОН, който се отваря само в браузър. Отворете ',
-          h('a', { href: 'https://ri.mon.bg/active-institutions', target: '_blank', rel: 'noopener noreferrer' }, 'ri.mon.bg/active-institutions'),
-          ', изтеглете списъка (Excel или CSV) и го заредете тук – данните се свързват по кода по НЕИСПУО. Колоната „ЕИК“ в регистъра съдържа кода по БУЛСТАТ на училището и се записва като БУЛСТАТ. Заредете нов файл, когато е нужно обновяване.',
-          m.extraAt ? h('div', { class: 'small mt-8' }, 'Последен файл: ' + (m.extraName || '—') + ' · ' + fmtTime(m.extraAt) + ' · институции с данни: ' + (m.extraCount || 0)) : null,
-          can('addressees') ? h('div', { class: 'actions mt-8' }, monFile, h('button', { class: 'btn sm primary', onclick: () => monFile.click() }, 'Зареди файл от ri.mon.bg')) : null))
+        (() => {
+          const ri = r0.ri || {};
+          return h('div', { class: 'note' }, h('b', null, 'БУЛСТАТ, имейл, телефон и директор – от регистъра на институциите на МОН. '),
+            'Взимат се автоматично от ', h('a', { href: 'https://ri.mon.bg/active-institutions', target: '_blank', rel: 'noopener noreferrer' }, 'ri.mon.bg'),
+            ' (кодът, посочен там като „ЕИК“, е кодът по БУЛСТАТ на институцията и се записва като БУЛСТАТ). Списъкът се проверява всеки ден, а подробностите се изтеглят на порции и се обновяват на 30 дни.',
+            ri.count ? h('div', { class: 'small mt-8' }, 'Активни в регистъра: ' + ri.count + ' · с изтеглени данни: ' + (ri.withDetails || 0) + (ri.left ? ' · остават: ' + ri.left + ' (зареждат се автоматично, по 25 на всеки 5 минути)' : ' · всички са актуални') + (ri.detAt ? ' · последно: ' + fmtTime(ri.detAt) : '')) : h('div', { class: 'small mt-8' }, 'Регистърът още не е зареден – ще се зареди автоматично до няколко минути.'),
+            h('div', { class: 'small muted mt-8' }, 'При „Добави“ данните на избраната институция се изтеглят веднага. Ако регистърът е недостъпен, може да заредите изтеглен от ri.mon.bg файл (Excel/CSV).',
+              m.extraAt ? ' Последен файл: ' + (m.extraName || '—') + ' · ' + fmtTime(m.extraAt) + '.' : ''),
+            can('addressees') ? h('div', { class: 'actions mt-8' }, monFile, h('button', { class: 'btn sm', onclick: () => monFile.click() }, 'Зареди файл (по желание)')) : null);
+        })())
       : h('p', { class: 'small muted mb-12' }, 'Административните структури от Интегрираната информационна система на държавната администрация (ИИСДА) – наименование, ЕИК/БУЛСТАТ, адрес, имейл, телефон. Източник: ',
         h('a', { href: m.source || 'https://data.egov.bg/data/view/fd4218f2-72fa-44f2-853b-79aa1d7d6c2a', target: '_blank', rel: 'noopener noreferrer' }, 'Портал за отворени данни'),
         m.name ? ' – ' + m.name + ' (заредено ' + fmtTime(m.at) + ').' : '.', ' Обновява се автоматично при нов месечен ресурс. При ново заявление субектът се търси и оттук.'),
