@@ -33,7 +33,10 @@ jobs:
           sed -i "s/?v=dev/?v=$V/g" site/*.html
           sed -i -E "s#(from '\./[a-z0-9-]+\.js)'#\1?v=$V'#g" site/js/*.js
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with: { path: site }
+      # GitHub понякога показва каченото само след няколко секунди – без изчакване deploy-pages не го намира
+      - name: Изчакване на качения архив
+        run: sleep 15
       - id: deployment
         uses: actions/deploy-pages@v4
