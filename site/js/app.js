@@ -192,7 +192,8 @@ function drawClock() {
   const info = dayInfo(n.iso);
   el.className = 'clock ' + (info.workday ? 'work' : 'off');
   el.title = (info.workday ? 'Работен ден' : 'Неработен ден: ' + info.label) + ' (по българския календар с официалните празници)';
-  el.replaceChildren(h('span', { class: 'clock-day' }, n.weekday + ', ' + fmtDate(n.iso)), h('b', null, n.time), h('span', { class: 'clock-kind' }, info.workday ? 'работен ден' : /^празник/.test(info.label) ? info.label : 'почивен ден'));
+  el.title = n.weekday.charAt(0).toUpperCase() + n.weekday.slice(1) + ', ' + fmtDate(n.iso) + ' – ' + el.title;
+  el.replaceChildren(h('b', null, n.time), h('span', { class: 'clock-day' }, n.weekday.slice(0, 3) + ', ' + fmtDate(n.iso).slice(0, 5)), h('span', { class: 'clock-kind' }, info.workday ? 'работен ден' : /^празник/.test(info.label) ? info.label : 'почивен ден'));
 }
 
 function tick() {
@@ -308,6 +309,7 @@ const ICON = {
   chevron: '<path d="m6 9 6 6 6-6"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
   shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  fold: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m15 10-2 2 2 2"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><path d="M12 17h.01"/>',
   ticket: '<path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M14 6v2M14 11v2M14 16v2"/>'
 };
@@ -318,36 +320,83 @@ function icon(name, cls) {
   return s;
 }
 
-/* групи в страничното меню; [адрес, текст, иконка, видим, ключ за брояч] */
+/* групи в страничното меню; [адрес, текст, иконка, видим, ключ за брояч]; третият елемент на групата – свива ли се */
 const NAV = () => [
   ['Работа', [
     ['#/dashboard', 'Табло', 'home', true],
     ['#/requests', 'Заявления', 'send', true, 'requests'],
-    ['#/calendar', 'Календар', 'calendar', true],
-    ['#/register', 'Изходящ регистър', 'book', can('outReg')],
-    ['#/mail', 'Поща', 'mail', can('mailbox'), 'mail'],
     ['#/cases', 'Входящ регистър', 'inbox', isDefaultCur() && can('inReg'), 'cases'],
-    ['#/courts', 'Съдебни дела', 'scale', true]
-  ]],
+    ['#/mail', 'Поща', 'mail', can('mailbox'), 'mail'],
+    ['#/calendar', 'Календар', 'calendar', true],
+    ['#/courts', 'Съдебни дела', 'scale', true],
+    ['#/register', 'Изходящ регистър', 'book', can('outReg')]
+  ], false],
   ['Справочници', [
     ['#/addressees', 'Адресати', 'contacts', true],
-    ['#/departments', 'Отдели', 'org', true],
-    ['#/calc', 'Калкулатор на срокове', 'calc', true],
     ['#/verify', 'Проверки в регистрите', 'search', true],
-    ['#/kep', 'Проверка на КЕП', 'key', true]
-  ]],
-  ['Помощ', [
-    ['#/help', 'Ръководство', 'help', true],
-    ['#/tickets', 'Тикети', 'ticket', true, 'tickets']
-  ]],
+    ['#/calc', 'Калкулатор на срокове', 'calc', true],
+    ['#/kep', 'Проверка на КЕП', 'key', true],
+    ['#/departments', 'Отдели', 'org', true]
+  ], true],
   ['Администрация', [
     ['#/users', 'Потребители и права', 'users', can('users')],
-    ['#/logins/*', 'Входове и сесии', 'clock', can('logins')],
     ['#/persons', 'Лица и достъп', 'building', isSuper()],
     ['#/system', 'Система', 'gear', can('system')],
+    ['#/logins/*', 'Входове и сесии', 'clock', can('logins')],
     ['#/log', 'Дневник', 'list', can('log')]
-  ]]
-].map(([g, items]) => [g, items.filter(x => x[3])]).filter(([, items]) => items.length);
+  ], true]
+].map(([g, items, fold]) => [g, items.filter(x => x[3]), fold]).filter(([, items]) => items.length);
+const NAV_FOOT = [['#/help', 'Ръководство', 'help'], ['#/tickets', 'Тикети', 'ticket', 'tickets']];
+
+/* какво е свито (групи и цялото меню) – запомня се в браузъра; по подразбиране „Администрация“ е свита */
+const navPref = (() => {
+  let v = {};
+  try { v = JSON.parse(localStorage.getItem('nav') || '{}') || {}; } catch (_) { v = {}; }
+  return Object.assign({ rail: false, closed: { 'Администрация': true } }, v);
+})();
+const navSave = () => { try { localStorage.setItem('nav', JSON.stringify(navPref)); } catch (_) { /* без памет */ } };
+const railOn = () => navPref.rail && window.matchMedia('(min-width: 1001px)').matches;
+function setRail(on) {
+  navPref.rail = on; navSave();
+  document.body.classList.toggle('nav-rail', railOn());
+  closeFly();
+}
+
+/* в свитото меню групата се отваря встрани (над съдържанието) */
+let flyEl = null;
+function closeFly() { if (flyEl) { flyEl.remove(); flyEl = null; } }
+function openFly(btn, title, items) {
+  const again = flyEl && flyEl.dataset.group === title;
+  closeFly();
+  if (again) return;
+  const r = btn.getBoundingClientRect();
+  flyEl = h('div', { class: 'nav-fly', 'data-group': title, style: 'top:' + Math.max(8, Math.min(r.top, window.innerHeight - 60 - items.length * 40)) + 'px;left:' + (r.right + 8) + 'px' },
+    h('div', { class: 'nav-title' }, title), items.map(a => { const c = a.cloneNode(true); c.addEventListener('click', closeFly); return c; }));
+  document.body.append(flyEl);
+}
+document.addEventListener('click', e => { if (flyEl && !flyEl.contains(e.target) && !e.target.closest('.nav-fold')) closeFly(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeFly(); });
+window.addEventListener('resize', () => { document.body.classList.toggle('nav-rail', railOn()); closeFly(); });
+
+function navLink([href, text, ico, , key]) {
+  return h('a', { href, title: text }, icon(ico), h('span', { class: 'nav-text' }, text), key ? h('span', { class: 'nav-count', 'data-count': key, hidden: true }) : null);
+}
+function navGroup([group, items, fold]) {
+  const links = items.map(navLink);
+  const list = h('div', { class: 'nav-items' }, links);
+  if (!fold) return h('div', { class: 'nav-group' }, h('div', { class: 'nav-title' }, group), list);
+  const wrap = h('div', { class: 'nav-group fold' + (navPref.closed[group] ? ' closed' : '') });
+  const hint = h('span', { class: 'nav-hint' }, String(items.length));
+  const btn = h('button', { type: 'button', class: 'nav-title nav-fold', 'aria-expanded': String(!navPref.closed[group]), title: group, onclick: () => {
+    if (document.body.classList.contains('nav-rail')) return openFly(btn, group, links);
+    const closed = !wrap.classList.contains('closed');
+    wrap.classList.toggle('closed', closed);
+    btn.setAttribute('aria-expanded', String(!closed));
+    navPref.closed[group] = closed; navSave();
+  } }, icon('chevron', 'sm nav-arrow'), icon(group === 'Администрация' ? 'gear' : 'contacts', 'nav-gico'), h('span', { class: 'nav-text' }, group), hint);
+  wrap.append(btn, list);
+  return wrap;
+}
 
 function themeSelect() {
   const cur = document.documentElement.getAttribute('data-theme');
@@ -377,12 +426,14 @@ function dropdown(button, panel) {
 function shell() {
   if ($('view')) { markNav(); return; }
   const side = h('aside', { class: 'side', id: 'side' },
-    h('a', { class: 'side-brand', href: '#/dashboard' }, h('span', { class: 'logo-plate mini' }, h('img', { src: 'assets/logo-site.png', alt: 'ЗДОИ4You' })), h('span', { class: 'side-name' }, h('b', null, 'ADM'), h('small', null, 'ЗДОИ4You'))),
-    can('reqCreate') ? h('a', { class: 'btn primary side-new', href: '#/request/new' }, icon('plus'), 'Ново заявление') : null,
-    h('nav', { id: 'nav', 'aria-label': 'Основно меню' }, NAV().map(([group, items]) => h('div', { class: 'nav-group' },
-      h('div', { class: 'nav-title' }, group),
-      items.map(([href, text, ico, , key]) => h('a', { href }, icon(ico), h('span', null, text), key ? h('span', { class: 'nav-count', 'data-count': key, hidden: true }) : null))))),
-    h('div', { id: 'clock', class: 'clock', role: 'status' }));
+    h('div', { class: 'side-top' },
+      h('a', { class: 'side-brand', href: '#/dashboard' }, h('span', { class: 'logo-plate mini' }, h('img', { src: 'assets/logo-site.png', alt: 'ЗДОИ4You' })), h('span', { class: 'side-name' }, h('b', null, 'ADM'), h('small', null, 'ЗДОИ4You'))),
+      h('button', { type: 'button', class: 'icon-btn side-rail', 'aria-label': 'Свий или разгъни менюто', title: 'Свий / разгъни менюто', onclick: () => setRail(!navPref.rail) }, icon('fold'))),
+    can('reqCreate') ? h('a', { class: 'btn primary side-new', href: '#/request/new', title: 'Ново заявление' }, icon('plus'), h('span', { class: 'nav-text' }, 'Ново заявление')) : null,
+    h('nav', { id: 'nav', 'aria-label': 'Основно меню' }, NAV().map(navGroup)),
+    h('div', { class: 'side-foot' },
+      h('nav', { class: 'foot-links', 'aria-label': 'Помощ' }, NAV_FOOT.map(x => navLink([x[0], x[1], x[2], true, x[3]]))),
+      h('div', { id: 'clock', class: 'clock', role: 'status' })));
   const scrim = h('div', { class: 'scrim', onclick: () => document.body.classList.remove('nav-open') });
 
   const newItems = [
@@ -393,19 +444,15 @@ function shell() {
   const newMenu = newItems.length ? dropdown(h('button', { class: 'btn primary sm' }, icon('plus'), h('span', { class: 'hide-sm' }, 'Ново'), icon('chevron', 'sm')),
     h('div', { class: 'dd-panel' }, newItems)) : null;
 
-  const userMenu = dropdown(h('button', { class: 'user-chip' }, h('span', { class: 'avatar' }, initials(me.name)), h('span', { class: 'who hide-sm' }, h('b', null, me.name), h('small', null, me.role)), icon('chevron', 'sm')),
+  const userMenu = dropdown(h('button', { class: 'user-chip', title: 'Оставащо време на сесията се избира в „Моят профил“' }, h('span', { class: 'avatar' }, initials(me.name)),
+    h('span', { class: 'who hide-sm' }, h('b', null, me.name), h('small', { id: 'timer' }, 'сесия ', h('span', { id: 'timer-text' }, ''))), icon('chevron', 'sm')),
     h('div', { class: 'dd-panel right' },
       h('div', { class: 'dd-head' }, h('b', null, me.name), h('div', { class: 'small muted' }, me.username + ' · ' + me.role)),
       h('a', { href: '#/profile' }, icon('user'), 'Моят профил'),
       h('a', { href: '#/logins' }, icon('clock'), 'Моите входове и сесии'),
+      h('button', { type: 'button', onclick: () => ticketDialog() }, icon('ticket'), 'Подай сигнал от тази страница'),
       h('div', { class: 'dd-row' }, themeSelect()),
       h('button', { type: 'button', onclick: async () => { try { await api('logout'); } catch (_) { /* изтекла */ } endSession('Излязохте от системата.'); } }, icon('logout'), 'Изход')));
-
-  const helpMenu = dropdown(h('button', { class: 'icon-btn', 'aria-label': 'Помощ', title: 'Помощ: ръководство и сигнали' }, icon('help')),
-    h('div', { class: 'dd-panel right' },
-      h('a', { href: '#/help' }, icon('help'), 'Ръководство'),
-      h('button', { type: 'button', onclick: () => ticketDialog() }, icon('ticket'), 'Подай сигнал от тази страница'),
-      h('a', { href: '#/tickets' }, icon('list'), 'Тикети')));
 
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'icon-btn menu-btn', 'aria-label': 'Меню', onclick: () => document.body.classList.toggle('nav-open') }, icon('menu')),
@@ -413,10 +460,9 @@ function shell() {
     searchBox(),
     h('div', { class: 'top-right' },
       newMenu,
-      helpMenu,
-      h('span', { class: 'timer', id: 'timer', title: 'Оставащо време на сесията (избира се в „Моят профил“)' }, icon('clock', 'sm'), h('span', { id: 'timer-text' }, '')),
       userMenu));
   $('app').replaceChildren(h('div', { class: 'layout' }, side, scrim, h('div', { class: 'content' }, top, h('main', { id: 'view' }))));
+  document.body.classList.toggle('nav-rail', railOn());
   markNav();
   tick();
   refreshCounts();
@@ -425,7 +471,8 @@ function shell() {
 function markNav() {
   const cur = location.hash.split('?')[0].split('/').slice(0, 2).join('/');
   const alias = { '#/ticket': '#/tickets', '#/court': '#/courts', '#/case': '#/cases', '#/request': '#/requests', '#/logins': can('logins') ? '#/logins/*' : '' };
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === (alias[cur] || cur)));
+  document.querySelectorAll('#nav a, .foot-links a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === (alias[cur] || cur)));
+  closeFly();
   document.body.classList.remove('nav-open');
 }
 
