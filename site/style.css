@@ -424,3 +424,22 @@ tr.canceled td:last-child, tr.canceled td:nth-child(4) { text-decoration: none; 
 .verify-btn { align-self: flex-start; margin-top: 4px; }
 .verify-card .kv dd div + div { margin-top: 2px; }
 .person-hit + .person-hit { border-top: 1px solid var(--line); padding-top: 10px; }
+/* ръководство и тикети */
+.help-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; align-items: start; }
+.help-toc { position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow: auto; font-size: 14px; }
+.help-toc ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.help-sec { scroll-margin-top: 72px; }
+.md { line-height: 1.6; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md h3 { font-size: 16px; margin: 18px 0 6px; } .md h4 { font-size: 15px; margin: 14px 0 4px; }
+.md p { margin: 0 0 10px; } .md ul, .md ol { margin: 0 0 10px; padding-left: 22px; } .md li + li { margin-top: 3px; }
+.md code { background: var(--gray-bg); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+.md pre { background: var(--gray-bg); padding: 10px 12px; border-radius: 8px; overflow: auto; } .md pre code { background: none; padding: 0; }
+.md-note { border-left: 3px solid var(--accent); background: var(--soft); color: var(--ink); padding: 8px 12px; border-radius: 0 8px 8px 0; margin: 0 0 10px; }
+.md-note p { margin: 0; } .md-note p + p { margin-top: 6px; }
+.ticket-msg { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.ticket-msg.author { background: var(--soft); border-color: transparent; }
+.ticket-msg.internal { background: var(--warn-bg); border-color: transparent; }
+.ticket-msg.change { background: none; border-style: dashed; padding: 6px 12px; }
+tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--gray-bg); }
+@media (max-width: 860px) { .help-layout { grid-template-columns: 1fr; } .help-toc { position: static; max-height: none; } }

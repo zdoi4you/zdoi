@@ -24,6 +24,7 @@ import * as persons from './persons.js';
 import * as courts from './courts.js';
 import * as registry from './registry.js';
 import * as verify from './verify.js';
+import * as help from './help.js';
 import { ROLE_SUPER, isAdminRole } from './config.js';
 import { SCHEMA_VER } from './schema.js';
 
@@ -74,6 +75,16 @@ export const ACTIONS = {
   'verify.eik': { auth: 'user', fn: verify.verifyEik },
   'verify.person': { auth: 'user', fn: verify.verifyPerson },
   'verify.name': { auth: 'user', fn: verify.verifyName },
+  'help.list': { auth: 'user', fn: help.helpList },
+  'help.save': { auth: 'admin', perm: 'help', fn: help.helpSave },
+  'help.delete': { auth: 'admin', perm: 'help', fn: help.helpDelete },
+  'help.import': { auth: 'admin', perm: 'help', big: true, fn: help.helpImport },
+  'ticket.list': { auth: 'user', fn: help.ticketList },
+  'ticket.count': { auth: 'user', fn: help.ticketCount },
+  'ticket.get': { auth: 'user', fn: help.ticketGet },
+  'ticket.create': { auth: 'user', fn: help.ticketCreate },
+  'ticket.reply': { auth: 'user', fn: help.ticketReply },
+  'ticket.update': { auth: 'user', fn: help.ticketUpdate },
   'registry.refresh': { auth: 'user', perm: 'addressees', fn: registry.registryRefresh },
   'registry.import': { auth: 'user', perm: 'addressees', fn: registry.registryImport },
   'registry.monImport': { auth: 'user', perm: 'addressees', big: true, fn: registry.registryMonImport },

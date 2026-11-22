@@ -74,6 +74,19 @@ export const SCHEMA = {
     name: ['Наименование'], head: ['Ръководител'], position: ['Длъжност'],
     email: ['Имейл'], active: ['Активен'], by: ['Въвел'], at: ['Въведен']
   }, r => r.name],
+  /* ръководство за работа със системата – само в базата; „За кого“ – роли (празно – всички), „Нужно право“ – ключ на право */
+  help: ['ADM Ръководство', {
+    key: ['Ключ', 'index'], title: ['Заглавие'], audience: ['За кого (роли)'], perm: ['Нужно право'], order: ['Подредба'],
+    body: ['Текст', 'long'], by: ['Променил'], at: ['Създаден'], updatedAt: ['Променен']
+  }, r => r.title],
+  tickets: ['ADM Тикети', {
+    no: ['№', 'index'], title: ['Заглавие'], category: ['Категория'], priority: ['Приоритет'], status: ['Статус'],
+    body: ['Описание', 'long'], page: ['Страница'], createdAt: ['Подаден'], createdBy: ['Подал', 'index'], assignee: ['Отговорник'],
+    updatedAt: ['Променен'], lastBy: ['Последно от'], closedAt: ['Решен/затворен на']
+  }, r => r.no + ' ' + r.title],
+  ticketMsgs: ['ADM Тикети – съобщения', {
+    no: ['Тикет', 'index'], at: ['Време'], user: ['Потребител'], text: ['Текст', 'long'], internal: ['Вътрешно'], kind: ['Вид']
+  }, r => r.no + ' ' + r.user],
   log: ['ADM Дневник', {
     at: ['Време'], actor: ['Потребител'], action: ['Действие'], ref: ['Обект'], details: ['Подробности', 'long'], ip: ['IP адрес']
   }, r => r.action],
@@ -83,7 +96,7 @@ export const SCHEMA = {
 };
 
 /* сменя се при нови списъци или колони: Cron-ът тогава обновява структурата в SharePoint */
-export const SCHEMA_VER = '2026-11-21';
+export const SCHEMA_VER = '2026-11-23';
 
 export const colName = key => 'z' + key[0].toUpperCase() + key.slice(1);
 export const tableKeys = Object.keys(SCHEMA);

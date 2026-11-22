@@ -307,7 +307,9 @@ const ICON = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
-  shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/>'
+  shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><path d="M12 17h.01"/>',
+  ticket: '<path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M14 6v2M14 11v2M14 16v2"/>'
 };
 function icon(name, cls) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -333,6 +335,10 @@ const NAV = () => [
     ['#/calc', 'Калкулатор на срокове', 'calc', true],
     ['#/verify', 'Проверки в регистрите', 'search', true],
     ['#/kep', 'Проверка на КЕП', 'key', true]
+  ]],
+  ['Помощ', [
+    ['#/help', 'Ръководство', 'help', true],
+    ['#/tickets', 'Тикети', 'ticket', true, 'tickets']
   ]],
   ['Администрация', [
     ['#/users', 'Потребители и права', 'users', can('users')],
@@ -395,12 +401,19 @@ function shell() {
       h('div', { class: 'dd-row' }, themeSelect()),
       h('button', { type: 'button', onclick: async () => { try { await api('logout'); } catch (_) { /* изтекла */ } endSession('Излязохте от системата.'); } }, icon('logout'), 'Изход')));
 
+  const helpMenu = dropdown(h('button', { class: 'icon-btn', 'aria-label': 'Помощ', title: 'Помощ: ръководство и сигнали' }, icon('help')),
+    h('div', { class: 'dd-panel right' },
+      h('a', { href: '#/help' }, icon('help'), 'Ръководство'),
+      h('button', { type: 'button', onclick: () => ticketDialog() }, icon('ticket'), 'Подай сигнал от тази страница'),
+      h('a', { href: '#/tickets' }, icon('list'), 'Тикети')));
+
   const top = h('header', { class: 'topbar' },
     h('button', { class: 'icon-btn menu-btn', 'aria-label': 'Меню', onclick: () => document.body.classList.toggle('nav-open') }, icon('menu')),
     personSwitch(),
     searchBox(),
     h('div', { class: 'top-right' },
       newMenu,
+      helpMenu,
       h('span', { class: 'timer', id: 'timer', title: 'Оставащо време на сесията (избира се в „Моят профил“)' }, icon('clock', 'sm'), h('span', { id: 'timer-text' }, '')),
       userMenu));
   $('app').replaceChildren(h('div', { class: 'layout' }, side, scrim, h('div', { class: 'content' }, top, h('main', { id: 'view' }))));
@@ -411,7 +424,7 @@ function shell() {
 
 function markNav() {
   const cur = location.hash.split('?')[0].split('/').slice(0, 2).join('/');
-  const alias = { '#/court': '#/courts', '#/case': '#/cases', '#/request': '#/requests', '#/logins': can('logins') ? '#/logins/*' : '' };
+  const alias = { '#/ticket': '#/tickets', '#/court': '#/courts', '#/case': '#/cases', '#/request': '#/requests', '#/logins': can('logins') ? '#/logins/*' : '' };
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === (alias[cur] || cur)));
   document.body.classList.remove('nav-open');
 }
@@ -422,11 +435,12 @@ async function refreshCounts(force) {
   if (!me || (!force && Date.now() - countsAt < 120000)) return;
   countsAt = Date.now();
   try {
-    const d = await api('dashboard', { person: curCode || '' });
+    const [d, tk] = await Promise.all([api('dashboard', { person: curCode || '' }), api('ticket.count').catch(() => ({ count: 0 }))]);
     const set = (key, n, cls) => document.querySelectorAll('[data-count="' + key + '"]').forEach(el => { el.textContent = n > 99 ? '99+' : String(n); el.hidden = !n; el.className = 'nav-count ' + (cls || ''); });
     set('requests', d.reqSilent.length, 'bad');
     set('mail', d.unassignedMail, 'warn');
     set('cases', d.overdue.length, 'bad');
+    set('tickets', tk.count, 'warn');
   } catch (_) { /* броячите не са важни */ }
 }
 
@@ -3144,6 +3158,228 @@ function personSwitch() {
       } }, icon('building'), h('span', null, x.name, x.active ? null : ' (спряно)')))));
 }
 
+/* ---------- ръководство (само в базата, според ролята и правата) ---------- */
+
+/* кратък Markdown: ### заглавия, списъци (-, 1.), > бележка, ``` код, **удебелено**, `код`, [текст](#/… или https://…) – без innerHTML */
+function mdInline(text) {
+  const out = [];
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(((?:#\/|https:\/\/)[^)\s]*)\)/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1]) out.push(h('b', null, m[1]));
+    else if (m[2]) out.push(h('code', null, m[2]));
+    else out.push(h('a', m[4].startsWith('#') ? { href: m[4] } : { href: m[4], target: '_blank', rel: 'noopener noreferrer' }, m[3]));
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+function mdRender(src) {
+  const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let para = [], list = null, quote = null, code = null;
+  const flush = () => {
+    if (para.length) { out.push(h('p', null, mdInline(para.join(' ')))); para = []; }
+    if (list) { out.push(list); list = null; }
+    if (quote) { out.push(h('div', { class: 'md-note' }, quote.map(q => h('p', null, mdInline(q))))); quote = null; }
+  };
+  for (const raw of lines) {
+    if (code) { if (/^```/.test(raw)) { out.push(h('pre', null, h('code', null, code.join('\n')))); code = null; } else code.push(raw); continue; }
+    if (/^```/.test(raw)) { flush(); code = []; continue; }
+    const t = raw.trim();
+    let m;
+    if (!t) { flush(); continue; }
+    if ((m = /^(#{3,4})\s+(.+)$/.exec(t))) { flush(); out.push(h(m[1].length === 3 ? 'h3' : 'h4', null, mdInline(m[2]))); continue; }
+    if ((m = /^>\s?(.*)$/.exec(t))) { if (para.length || list) flush(); (quote = quote || []).push(m[1]); continue; }
+    if ((m = /^(?:[-*]|(\d+)\.)\s+(.+)$/.exec(t))) {
+      if (para.length || quote) flush();
+      const tag = m[1] ? 'ol' : 'ul';
+      if (!list || list.tagName.toLowerCase() !== tag) { if (list) out.push(list); list = h(tag, null); }
+      list.append(h('li', null, mdInline(m[2])));
+      continue;
+    }
+    if (list && /^\s{2,}/.test(raw)) { list.lastChild.append(' ', ...mdInline(t)); continue; }
+    if (list || quote) flush();
+    para.push(t);
+  }
+  if (code) out.push(h('pre', null, h('code', null, code.join('\n'))));
+  flush();
+  return h('div', { class: 'md' }, out);
+}
+
+async function helpView(query) {
+  loading();
+  const q = new URLSearchParams(query || '');
+  try {
+    const as = q.get('as') || '';
+    const r = await api('help.list', as ? { as } : {});
+    const find = h('input', { type: 'search', placeholder: 'Търсене в ръководството', 'aria-label': 'Търсене в ръководството', value: q.get('q') || '' });
+    const toc = h('nav', { class: 'help-toc card', 'aria-label': 'Съдържание' });
+    const body = h('div', { class: 'stack help-body' });
+    const permOpts = [['', '— без —']].concat(((boot && boot.permGroups) || []).flatMap(([, list]) => list.map(([k, label]) => [k, label])));
+    const edit = s => {
+      const roleBoxes = r.roles.map(role => h('label', { class: 'check' }, h('input', { type: 'checkbox', value: role, checked: (s.audience || []).includes(role) }), h('span', null, role)));
+      const extra = h('fieldset', { class: 'perm-group' }, h('legend', null, 'За кого (без отметка – за всички)'), h('div', { class: 'perm-list' }, roleBoxes));
+      formDialog(s._id ? 'Раздел от ръководството' : 'Нов раздел', [
+        { k: 'title', label: 'Заглавие', req: true, max: 200, full: true },
+        { k: 'order', label: 'Подредба (по-малкото – по-напред)', type: 'number', min: 0, maxValue: 9999 },
+        { k: 'perm', label: 'Само с право', type: 'select', options: permOpts },
+        { k: 'body', label: 'Текст', type: 'textarea', rows: 18, max: 60000, full: true, hint: '### подзаглавие · - списък · 1. стъпки · > бележка · **удебелено** · `код` · [текст](#/requests)' }
+      ], s, 'Запази', async v => {
+        await api('help.save', Object.assign(v, { id: s._id || '', audience: roleBoxes.map(l => l.querySelector('input')).filter(i => i.checked).map(i => i.value) }));
+        toast('Запазено.'); helpView(query);
+      }, { wide: true, extra });
+    };
+    const del = async s => {
+      if (!confirm('Да се изтрие ли разделът „' + s.title + '“?')) return;
+      try { await api('help.delete', { id: s._id }); toast('Изтрит.'); helpView(query); } catch (e) { toast(e.message); }
+    };
+    const importFile = () => {
+      const inp = h('input', { type: 'file', accept: '.md,.txt,text/markdown,text/plain', onchange: async () => {
+        const f = inp.files[0];
+        if (!f) return;
+        try { const x = await api('help.import', { markdown: await f.text() }); toast('Импорт: нови ' + x.added + ', обновени ' + x.updated + '.'); helpView(query); } catch (e) { toast(e.message); }
+      } });
+      inp.click();
+    };
+    const draw = () => {
+      const needle = find.value.trim().toLowerCase();
+      const list = r.sections.filter(s => !needle || (s.title + '\n' + s.body).toLowerCase().includes(needle));
+      toc.replaceChildren(h('div', { class: 'small muted mb-8' }, 'Съдържание'), list.length ? h('ol', null, list.map(s => h('li', null, h('a', { href: '#help-' + s.key, onclick: e => { e.preventDefault(); document.getElementById('help-' + s.key).scrollIntoView({ behavior: 'smooth' }); } }, s.title)))) : h('p', { class: 'small muted' }, '—'));
+      body.replaceChildren(...(list.length ? list.map(s => h('section', { class: 'card stack help-sec', id: 'help-' + s.key },
+        h('div', { class: 'head m-0' }, h('h2', null, s.title), r.editor ? h('div', { class: 'actions' },
+          s.audience.length ? s.audience.map(x => h('span', { class: 'pill' }, x)) : h('span', { class: 'pill' }, 'за всички'),
+          s.perm ? h('span', { class: 'pill info', title: permLabel(s.perm) }, 'право: ' + s.perm) : null,
+          h('button', { class: 'btn sm', onclick: () => edit(s) }, 'Промени'), h('button', { class: 'btn sm', onclick: () => del(s) }, 'Изтрий')) : null),
+        mdRender(s.body),
+        r.editor && s.updatedAt ? h('p', { class: 'small muted' }, 'Променено ' + fmtTime(s.updatedAt) + (s.by ? ' от ' + userName(s.by) : '')) : null))
+        : [h('div', { class: 'card' }, h('p', { class: 'empty' }, r.total ? 'Няма раздел, който съвпада с търсенето.' : r.editor ? 'Ръководството е празно. Добавете раздел или импортирайте файл (Markdown).' : 'Ръководството още не е попълнено.'))]));
+    };
+    find.addEventListener('input', draw);
+    const asSel = r.editor ? h('select', { 'aria-label': 'Преглед като', onchange: e => { location.hash = '#/help' + (e.target.value ? '?as=' + encodeURIComponent(e.target.value) : ''); } },
+      h('option', { value: '' }, 'Всички раздели (редактор)'), r.roles.map(x => h('option', { value: x }, 'Както го вижда: ' + x))) : null;
+    if (asSel) asSel.value = as;
+    setView(head('Ръководство', r.editor ? [asSel, h('button', { class: 'btn', onclick: importFile, title: 'Файл .md: всеки раздел започва с „## Заглавие“, после по желание „За: Роля, Роля“ и „Право: ключ“' }, 'Импорт от файл'), h('button', { class: 'btn primary', onclick: () => edit({ order: (r.sections.length + 1) * 10 }) }, 'Нов раздел')] : null,
+      h('button', { class: 'btn', onclick: () => ticketDialog() }, 'Подай сигнал')),
+      h('p', { class: 'small muted mb-12' }, 'Как се работи със системата – показват се разделите за вашата роля (' + me.role + ') и права. Ръководството се пази в базата и се вижда само след вход. Не намирате отговор? „Подай сигнал“ отваря тикет към администраторите.'),
+      h('div', { class: 'filters mb-12' }, find),
+      h('div', { class: 'help-layout' }, toc, body));
+    draw();
+  } catch (e) { failView(e); }
+}
+
+/* ---------- тикети: проблеми, въпроси, заявки ---------- */
+
+const TICKET_PILL = { 'Нов': 'info', 'В работа': 'info', 'Чака отговор': 'warn', 'Решен': 'ok', 'Затворен': '' };
+const PRIO_PILL = { 'Нисък': '', 'Нормален': '', 'Висок': 'warn', 'Спешен': 'bad' };
+let ticketLists = null;
+async function ticketMeta() {
+  if (!ticketLists) { const r = await api('ticket.list', { mine: true }); ticketLists = { categories: r.categories, priorities: r.priorities, statuses: r.statuses }; }
+  return ticketLists;
+}
+
+/* нов тикет – от всяка страница; страницата, от която е отворен, се записва */
+async function ticketDialog(preset = {}) {
+  let L;
+  try { L = await ticketMeta(); } catch (e) { return toast(e.message); }
+  const page = preset.page !== undefined ? preset.page : /^#\/(help|tickets?)/.test(location.hash) ? '' : location.hash;
+  formDialog('Нов тикет', [
+    { k: 'category', label: 'Категория', type: 'select', req: true, options: L.categories },
+    { k: 'priority', label: 'Приоритет', type: 'select', options: L.priorities },
+    { k: 'title', label: 'Кратко заглавие', req: true, max: 200, full: true, placeholder: 'напр. Не се зарежда регистърът на училищата' },
+    { k: 'body', label: 'Описание', type: 'textarea', req: true, rows: 8, max: 20000, full: true, hint: 'Какво направихте, какво очаквахте и какво стана (точния текст на грешката). Без ЕГН и пароли.' },
+    { k: 'page', label: 'Страница', max: 250, full: true, hint: 'Попълва се сама – страницата, от която подавате сигнала.' }
+  ], { category: preset.category || L.categories[0], priority: 'Нормален', page }, 'Подай', async v => {
+    const r = await api('ticket.create', v);
+    toast('Тикет ' + r.no + ' е подаден.'); countsAt = 0;
+    location.hash = '#/ticket/' + encodeURIComponent(r.no);
+  }, { wide: true });
+}
+
+async function ticketsView(query) {
+  loading();
+  const q = new URLSearchParams(query || '');
+  try {
+    const mine = q.get('mine') === '1';
+    const r = await api('ticket.list', { mine });
+    ticketLists = { categories: r.categories, priorities: r.priorities, statuses: r.statuses };
+    const st = h('select', { 'aria-label': 'Статус' }, h('option', { value: 'open' }, 'Отворени'), h('option', { value: '' }, 'Всички статуси'), r.statuses.map(s => h('option', { value: s }, s)));
+    st.value = q.get('status') === null ? 'open' : q.get('status');
+    const cat = h('select', { 'aria-label': 'Категория' }, h('option', { value: '' }, 'Всички категории'), r.categories.map(s => h('option', { value: s }, s)));
+    cat.value = q.get('cat') || '';
+    const find = h('input', { type: 'search', placeholder: 'Търсене по №, заглавие, подател', 'aria-label': 'Търсене' });
+    const box = h('div', { class: 'card' });
+    const open = ['Нов', 'В работа', 'Чака отговор'];
+    const all = r.handler && !mine;
+    const draw = () => {
+      const n = find.value.trim().toLowerCase();
+      const rows = r.tickets.filter(t => (st.value === 'open' ? open.includes(t.status) : !st.value || t.status === st.value) && (!cat.value || t.category === cat.value)
+        && (!n || [t.no, t.title, userName(t.createdBy), t.createdBy].join(' ').toLowerCase().includes(n)));
+      box.replaceChildren(table(['№', 'Заглавие', 'Категория', 'Приоритет', 'Статус', all ? 'Подал' : null, 'Отговорник', 'Последна промяна'].filter(Boolean), rows.map(t => h('tr', { class: 'clickable', onclick: () => { location.hash = '#/ticket/' + encodeURIComponent(t.no); } },
+        h('td', null, h('a', { href: '#/ticket/' + encodeURIComponent(t.no) }, t.no)), h('td', null, t.title), h('td', null, t.category),
+        h('td', null, h('span', { class: 'pill ' + (PRIO_PILL[t.priority] || '') }, t.priority)), h('td', null, h('span', { class: 'pill ' + (TICKET_PILL[t.status] || '') }, t.status)),
+        all ? h('td', null, userName(t.createdBy)) : null, h('td', null, t.assignee ? userName(t.assignee) : '—'), h('td', null, fmtTime(t.updatedAt)))),
+        r.tickets.length ? 'Няма тикети по този филтър.' : 'Още няма тикети. „Нов тикет“ – при проблем, въпрос или заявка.'));
+    };
+    [st, cat].forEach(x => x.addEventListener('change', draw));
+    find.addEventListener('input', draw);
+    const tabs = r.handler ? h('div', { class: 'seg mb-12' }, [['', 'Всички тикети'], ['1', 'Моите']].map(([k, label]) =>
+      h('button', { class: 'btn sm' + ((mine ? '1' : '') === k ? ' primary' : ''), onclick: () => { location.hash = '#/tickets' + (k ? '?mine=1' : ''); } }, label))) : null;
+    setView(head('Тикети', h('a', { class: 'btn', href: '#/help' }, 'Ръководство'), h('button', { class: 'btn primary', onclick: () => ticketDialog({ page: '' }) }, 'Нов тикет')),
+      tabs,
+      h('p', { class: 'small muted mb-12' }, all ? 'Всички подадени тикети. Новите се отбелязват в менюто; подателят получава имейл при отговор и при смяна на статуса.' : 'Вашите сигнали за проблеми, въпроси и заявки (вкл. отворени данни и регистри). Получавате имейл при отговор.'),
+      h('div', { class: 'filters mb-12' }, find, st, cat), box);
+    draw();
+  } catch (e) { failView(e); }
+}
+
+async function ticketPage(no) {
+  loading();
+  try {
+    const r = await api('ticket.get', { no });
+    const t = r.ticket, mine = t.createdBy === me.username;
+    const reload = () => { countsAt = 0; ticketPage(no); };
+    const msgs = r.messages.map(m => h('div', { class: 'ticket-msg' + (m.internal === 'Да' ? ' internal' : '') + (m.kind === 'Промяна' ? ' change' : '') + (m.user === t.createdBy ? ' author' : '') },
+      h('div', { class: 'small muted' }, h('b', null, userName(m.user)), ' · ' + fmtTime(m.at), m.internal === 'Да' ? h('span', { class: 'pill warn ml-4' }, 'вътрешно') : null),
+      m.kind === 'Промяна' ? h('div', { class: 'small' }, m.text) : h('div', { class: 'pre' }, m.text)));
+    const text = h('textarea', { rows: 5, maxlength: 20000, 'aria-label': 'Съобщение', placeholder: mine ? 'Допълнение или отговор на въпроса…' : 'Отговор до подателя…' });
+    const internal = r.handler ? h('input', { type: 'checkbox' }) : null;
+    const nextSt = r.handler && !mine ? h('select', { 'aria-label': 'Статус след отговора' }, h('option', { value: '' }, 'Статус: без промяна'), r.statuses.map(s => h('option', { value: s }, 'Статус: ' + s))) : null;
+    if (nextSt) nextSt.value = t.status === 'Нов' ? 'В работа' : '';
+    const send = async () => {
+      try { await api('ticket.reply', { no: t.no, text: text.value, internal: internal ? internal.checked : false, status: nextSt && !(internal && internal.checked) ? nextSt.value : '' }); toast('Изпратено.'); reload(); } catch (e) { toast(e.message); }
+    };
+    const sel = (k, list, val) => { const s = h('select', { name: k }, list.map(o => { const [v, tx] = pair(o); return h('option', { value: v }, tx); })); s.value = val || ''; return s; };
+    let manage = null;
+    if (r.handler) {
+      const staff = (boot.users || []).filter(u => u.role === 'Администратор' || u.role === 'Суперадминистратор');
+      const fs = { status: sel('status', r.statuses, t.status), priority: sel('priority', r.priorities, t.priority), category: sel('category', r.categories, t.category),
+        assignee: sel('assignee', [['', '— без отговорник —']].concat(staff.map(u => [u.username, u.name])), t.assignee) };
+      manage = h('section', { class: 'card stack' }, h('h2', null, 'Обработка'),
+        h('div', { class: 'form-grid' }, [['Статус', fs.status], ['Приоритет', fs.priority], ['Категория', fs.category], ['Отговорник', fs.assignee]].map(([l, s]) => h('label', { class: 'field' }, h('span', null, l), s))),
+        h('div', { class: 'actions' }, h('button', { class: 'btn primary sm', onclick: async () => {
+          try { const x = await api('ticket.update', { no: t.no, status: fs.status.value, priority: fs.priority.value, category: fs.category.value, assignee: fs.assignee.value }); toast(x.changed.length ? 'Запазено.' : 'Няма промени.'); reload(); } catch (e) { toast(e.message); }
+        } }, 'Запази'), t.assignee !== me.username ? h('button', { class: 'btn sm', onclick: async () => { try { await api('ticket.update', { no: t.no, assignee: me.username, status: t.status === 'Нов' ? 'В работа' : t.status }); toast('Поехте тикета.'); reload(); } catch (e) { toast(e.message); } } }, 'Поеми') : null));
+    }
+    setView(head(t.no + ' · ' + t.title, h('a', { class: 'btn', href: '#/tickets' }, 'Всички тикети'),
+      mine && !r.handler && t.status !== 'Затворен' ? h('button', { class: 'btn', onclick: async () => { if (!confirm('Да се затвори ли тикетът?')) return; try { await api('ticket.update', { no: t.no, status: 'Затворен' }); toast('Затворен.'); reload(); } catch (e) { toast(e.message); } } }, 'Затвори тикета') : null),
+      h('div', { class: 'grid2 ticket-grid' },
+        h('div', { class: 'stack' },
+          h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Описание'), h('span', { class: 'pill ' + (TICKET_PILL[t.status] || '') }, t.status)),
+            h('div', { class: 'pre' }, t.body),
+            t.page ? h('p', { class: 'small muted' }, 'Страница: ', /^#\//.test(t.page) ? h('a', { href: t.page }, t.page) : t.page) : null),
+          h('section', { class: 'card stack' }, h('h2', null, 'Разговор'), msgs.length ? h('div', { class: 'stack' }, msgs) : h('p', { class: 'empty' }, 'Още няма отговори.'),
+            t.status === 'Затворен' && !r.handler ? h('p', { class: 'small muted' }, 'Тикетът е затворен. Ново съобщение ще го отвори отново.') : null,
+            text, h('div', { class: 'actions' }, internal ? h('label', { class: 'check' }, internal, h('span', null, 'Вътрешна бележка (подателят не я вижда)')) : null, nextSt,
+              h('button', { class: 'btn primary', onclick: send }, 'Изпрати')))),
+        h('div', { class: 'stack' },
+          h('section', { class: 'card stack' }, h('h2', null, 'Данни'), kv([['Категория', t.category], ['Приоритет', h('span', { class: 'pill ' + (PRIO_PILL[t.priority] || '') }, t.priority)], ['Подал', userName(t.createdBy)],
+            ['Подаден', fmtTime(t.createdAt)], ['Отговорник', t.assignee ? userName(t.assignee) : '—'], ['Последна промяна', fmtTime(t.updatedAt)], t.closedAt ? ['Решен/затворен', fmtTime(t.closedAt)] : null])),
+          manage)));
+  } catch (e) { failView(e); }
+}
+
 /* ---------- маршрути ---------- */
 
 async function route() {
@@ -3181,6 +3417,9 @@ async function route() {
     case 'calc': return calcView();
     case 'kep': return kepView();
     case 'verify': return verifyView(query);
+    case 'help': return helpView(query);
+    case 'tickets': return ticketsView(query);
+    case 'ticket': return ticketPage(parts[1]);
     case 'requests': return requestsView(query);
     case 'request': return parts[1] === 'new' ? requestEditView(null) : parts[2] === 'edit' ? requestEditView(parts[1]) : requestView(parts[1]);
     case 'mail': return can('mailbox') ? mailInboxView() : noAccess('mailbox');
