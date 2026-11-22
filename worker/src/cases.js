@@ -266,8 +266,10 @@ export async function dashboard(d, ctx, app) {
   cases.forEach(c => { byStatus[c.status] = (byStatus[c.status] || 0) + 1; });
   const brief = c => ({ regNo: c.regNo, applicantName: c.applicantName, status: c.status, owner: c.owner, due: c.due, dueLabel: c.dueLabel, daysLeft: c.daysLeft, appealBy: c.appealBy, appealDays: c.appealDays, locked: c.locked });
   const open = cases.filter(c => CASE_OPEN.includes(c.status));
-  const hearings = (await app.store.list('courts')).filter(x => x.nextHearing && x.nextHearing >= today && daysBetween(today, x.nextHearing) <= 30)
-    .filter(x => !x.regNo || cases.some(c => c.regNo === x.regNo)).map(x => courtView(x)).sort((a, b) => a.nextHearing.localeCompare(b.nextHearing));
+  // делата – само на избраното лице
+  const myCourts = await visibleCourts(app, ctx, line(d.person, 10));
+  const hearings = myCourts.filter(x => x.nextHearing && x.nextHearing >= today && daysBetween(today, x.nextHearing) <= 30)
+    .map(x => courtView(x)).sort((a, b) => a.nextHearing.localeCompare(b.nextHearing));
   return Object.assign(await reqDashboard(app, ctx, line(d.person, 10)), {
     byStatus, total: cases.length, open: open.length,
     overdue: open.filter(c => c.daysLeft !== null && c.daysLeft < 0).map(brief),
@@ -276,7 +278,7 @@ export async function dashboard(d, ctx, app) {
     unassigned: open.filter(c => !c.owner).map(brief),
     appeals: cases.filter(c => c.appealDays !== null && c.appealDays >= 0 && c.appealDays <= 7).map(brief),
     hearings,
-    courtDue: (await visibleCourts(app, ctx)).flatMap(x => courtDeadlines(x, detailsOf(x), today).filter(dl => !dl.done && dl.kind !== 'Заседание' && dl.daysLeft <= 14 && dl.daysLeft >= -30)
+    courtDue: myCourts.flatMap(x => courtDeadlines(x, detailsOf(x), today).filter(dl => !dl.done && dl.kind !== 'Заседание' && dl.daysLeft <= 14 && dl.daysLeft >= -30)
       .map(dl => Object.assign(dl, { courtId: x._id, title: courtTitle(x) }))).sort((a, b) => a.date.localeCompare(b.date))
   });
 }
@@ -308,7 +310,7 @@ export async function calendar(d, ctx, app) {
     });
   }
   // делата: заседанията, сроковете по актовете, поставените от съда срокове и дължимите такси
-  (await app.store.list('courts')).filter(x => visible.has(x.regNo) || (!x.regNo && ctx.perms.casesAll)).forEach(x => {
+  (await visibleCourts(app, ctx, only)).forEach(x => {
     const det = detailsOf(x), ref = String(x.court || '').replace('Административен съд – ', 'АС ') + ' № ' + x.caseNo + '/' + x.year, href = '#/court/' + x._id;
     if (!det.hearings.length && x.nextHearing) add(x.nextHearing, 'Съдебно заседание', ref, x.kind, href, 'info');
     det.hearings.forEach(hg => add(hg.date + (hg.time ? 'T' + hg.time : ''), 'Съдебно заседание', ref, hg.kind + (hg.room ? ', зала ' + hg.room : '') + (hg.result ? ' – ' + hg.result : ''), href, 'info'));

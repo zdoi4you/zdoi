@@ -88,3 +88,29 @@ test('bootstrap: всички списъци за формулярите (вид
   const b = await admin.call('bootstrap');
   ['addresseeTypes', 'applicantTypes', 'statuses', 'kinds', 'channels', 'outcomes', 'servedHow', 'courtKinds', 'courts', 'reqStatuses', 'docKinds'].forEach(k => assert.ok(Array.isArray(b.lists[k]) && b.lists[k].length, k));
 });
+
+test('делата се разделят по лице (заявление, входящ регистър, дело без преписка)', async () => {
+  const { env, outbox, admin } = await ready();
+  env.MAILBOX = 'priemna@zdoi.eu';
+  assert.equal((await admin.call('persons.save', { isNew: true, code: 'abc', name: 'Фондация „АБВ“', outPrefix: 'АБВ', regBasis: '', users: [] })).ok, true);
+  const req = await admin.call('req.create', { mode: 'Сдружението', kind: 'Достъп до обществена информация', title: 'x', entity: { name: 'Община', email: 'o@example.org' }, points: ['a'], access: [], person: 'abc' });
+  const { regNo } = await admin.call('case.create', caseData());
+  const base = { court: 'Административен съд – Варна', year: '2026', kind: 'Жалба срещу решение', instance: 'Първа инстанция', status: 'Образувано', epep: false };
+  const a = await admin.call('court.save', Object.assign({ regNo: req.regNo, caseNo: '1' }, base));
+  const z = await admin.call('court.save', Object.assign({ regNo, caseNo: '2' }, base));
+  const free = await admin.call('court.save', Object.assign({ caseNo: '3', person: 'abc', nextHearing: '2099-01-10' }, base));
+  const ids = async person => (await admin.call('court.list', { person })).courts.map(x => x._id).sort();
+  assert.deepEqual(await ids('abc'), [a.id, free.id].sort());
+  assert.deepEqual(await ids('zdoi'), [z.id]);
+  assert.ok((await admin.call('court.list', { person: 'abc' })).cases.includes(req.regNo));
+  assert.ok(!(await admin.call('court.list', { person: 'abc' })).cases.includes(regNo));
+  // табло и календар – само делата на лицето
+  assert.equal((await admin.call('dashboard', { person: 'zdoi' })).hearings.length, 0);
+  assert.equal((await admin.call('calendar', { person: 'abc' })).events.filter(e => e.kind === 'Съдебно заседание').length, 1);
+  assert.equal((await admin.call('calendar', { person: 'zdoi' })).events.filter(e => e.kind === 'Съдебно заседание').length, 0);
+  // служител без достъп до лицето не вижда делото му, дори да е въвел или да е отговорник
+  const ivan = await addUser(env, outbox, admin, 'ivan', 'Служител');
+  await admin.call('court.assign', { id: free.id, owner: 'ivan' });
+  assert.equal((await ivan.call('court.get', { id: free.id })).error, 'notfound');
+  assert.equal((await ivan.call('court.save', Object.assign({ caseNo: '4', person: 'abc' }, base))).error, 'role');
+});

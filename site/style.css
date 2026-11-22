@@ -414,3 +414,4 @@ tr.canceled td:last-child, tr.canceled td:nth-child(4) { text-decoration: none; 
 .search-wrap { position: relative; }
 .search-results.in-form { top: calc(100% + 2px); max-height: 340px; }
 .search-results.in-form a { grid-template-columns: 70px minmax(0, 1fr); }
+.mb-4 { margin-bottom: 4px; }

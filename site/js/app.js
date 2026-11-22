@@ -853,7 +853,7 @@ function courtDialog(x, done) {
     try { await api('court.delete', { id: x._id }); d.close(); toast('Делото е изтрито.'); done(true); } catch (e) { toast(e.message); }
   } }, 'Изтрий') : null;
   const d = formDialog(x._id ? 'Основни данни на делото' : 'Ново дело', fields, values, 'Запази', async v => {
-    const r = await api('court.save', Object.assign(v, { id: x._id || '', procedure: v.procedure || x.procedure || 'АПК' }, x._id ? {} : { parties: x.parties || [] }));
+    const r = await api('court.save', Object.assign(v, { id: x._id || '', procedure: v.procedure || x.procedure || 'АПК' }, x._id ? {} : { parties: x.parties || [], person: curCode || '' }));
     toast(x._id ? 'Делото е записано.' : 'Делото е записано. Търси се в ЕПЕП…');
     if (!x._id) location.hash = '#/court/' + r.id; else done();
   }, { wide: true, extra: h('datalist', { id: 'court-names' }, boot.lists.courts.map(n => h('option', { value: n }))) });
@@ -863,7 +863,7 @@ function courtDialog(x, done) {
 async function courtsView(query) {
   loading();
   try {
-    const { courts, cases } = await api('court.list');
+    const { courts, cases } = await api('court.list', { person: curCode || '' });
     const list = h('datalist', { id: 'case-nos' }, cases.map(n => h('option', { value: n })));
     const q = h('input', { type: 'search', placeholder: 'Търсене: съд, №, докладчик, ответник, преписка…', 'aria-label': 'Търсене' });
     const st = h('select', { 'aria-label': 'Статус' }, h('option', { value: '' }, 'Всички статуси'), h('option', { value: 'open' }, 'Висящи'), boot.lists.courtStatuses.map(x => h('option', { value: x }, x)));
@@ -911,6 +911,7 @@ async function courtsView(query) {
     const tabs = h('div', { class: 'seg' }, h('button', { class: 'btn sm' + (query === 'stats' ? '' : ' primary'), onclick: () => { location.hash = '#/courts'; } }, 'Списък'), h('button', { class: 'btn sm' + (query === 'stats' ? ' primary' : ''), onclick: () => { location.hash = '#/courts?stats'; } }, 'Справки'));
     [q, st, own].forEach(x => x.addEventListener('input', draw));
     setView(head('Съдебни дела', tabs, can('courts') ? h('button', { class: 'btn primary', onclick: () => courtDialog({}, courtsView) }, 'Ново дело') : null), list,
+      manyPersons() && curPerson() ? h('p', { class: 'small muted mb-4' }, 'Дела на ', h('b', null, curPerson().name), ' – по заявленията от негово име' + (isDefaultCur() ? ' и по входящия регистър' : '') + '. Смяна на лицето – от горната лента.') : null,
       h('p', { class: 'small muted mb-12' }, 'Делата по ЗДОИ се разглеждат от административния съд по реда на АПК; решението му е окончателно (чл. 40, ал. 3 ЗДОИ). Данните за състава, заседанията и актовете се обновяват от ЕПЕП всеки ден.'),
       h('div', { class: 'card' }, h('div', { class: 'filters' }, q, st, own), query === 'stats' ? stats : body));
     draw();

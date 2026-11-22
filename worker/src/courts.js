@@ -14,6 +14,7 @@ import { term, termMonths, daysBetween } from './calendar.js';
 import { audit, mail } from './core.js';
 import { canSee, findCase } from './cases.js';
 import { reqScope } from './requests.js';
+import { allowedCodes, codeOf, DEFAULT_CODE } from './persons.js';
 import { assignCheck, usersBrief } from './users.js';
 import { notifyOf } from './auth.js';
 import { epepSearch, epepFetch, gidOf, caseUrl } from './epep.js';
@@ -190,21 +191,34 @@ export function courtView(x, today = todayIso()) {
 /* ---------- видимост ---------- */
 
 /* делото се вижда, ако се вижда преписката му; дело без преписка – от потребител с право „всички преписки“ */
-async function visibleRegNos(app, ctx) {
+/*
+ * Лицето на делото: на заявлението (П-…), Сдружението – за входящия регистър (ВХ-…), записаното при въвеждане – за дело
+ * без преписка. Делото се вижда само при достъп до лицето му и ако се вижда преписката (или потребителят е отговорник
+ * или въвел делото без преписка; дело без преписка – и с право „всички преписки“).
+ */
+async function courtScope(app, ctx) {
+  const codes = await allowedCodes(app, ctx);
+  const reqs = await app.store.list('requests'), see = await reqScope(app, ctx);
+  const reqPerson = new Map(reqs.map(r => [r.regNo, codeOf(r)]));
   const cases = (await app.store.list('cases')).filter(c => canSee(c, ctx)).map(c => c.regNo);
-  const reqs = (await app.store.list('requests')).filter(await reqScope(app, ctx)).map(r => r.regNo);
-  return new Set(cases.concat(reqs));
+  const regs = new Set(cases.concat(reqs.filter(see).map(r => r.regNo)));
+  const personOf = x => (x.regNo ? reqPerson.get(x.regNo) || DEFAULT_CODE : detailsOf(x).person || DEFAULT_CODE);
+  const seen = x => codes.includes(personOf(x)) &&
+    ((x.regNo ? regs.has(x.regNo) : !!ctx.perms.casesAll) || detailsOf(x).owner === ctx.username || (!x.regNo && x.by === ctx.username));
+  // преписките на лицето – за избора при ново дело
+  const regsOf = code => [...regs].filter(no => (reqPerson.get(no) || DEFAULT_CODE) === code);
+  return { codes, regs, personOf, seen, regsOf };
 }
-const seen = (x, regs, ctx) => (x.regNo ? regs.has(x.regNo) : !!ctx.perms.casesAll) || detailsOf(x).owner === ctx.username || (!x.regNo && x.by === ctx.username);
 
-export async function visibleCourts(app, ctx) {
-  const regs = await visibleRegNos(app, ctx);
-  return (await app.store.list('courts')).filter(x => seen(x, regs, ctx));
+/* only – само делата на това лице (избраното в интерфейса) */
+export async function visibleCourts(app, ctx, only) {
+  const sc = await courtScope(app, ctx);
+  return (await app.store.list('courts')).filter(x => sc.seen(x) && (!only || sc.personOf(x) === only));
 }
 
 async function findCourt(app, ctx, id) {
   const x = await app.store.get('courts', str(id, 20));
-  if (!x || !seen(x, await visibleRegNos(app, ctx), ctx)) fail('notfound', 'Делото не е намерено.');
+  if (!x || !(await courtScope(app, ctx)).seen(x)) fail('notfound', 'Делото не е намерено.');
   return x;
 }
 
@@ -226,9 +240,12 @@ function packDetails(det) {
 /* ---------- действия ---------- */
 
 export async function courtList(d, ctx, app) {
-  const today = todayIso();
-  const rows = await visibleCourts(app, ctx);
-  return { courts: rows.map(x => courtView(x, today)).sort(byDesc('at')), cases: [...(await visibleRegNos(app, ctx))] };
+  const today = todayIso(), only = line(d.person, 10), sc = await courtScope(app, ctx);
+  const rows = (await app.store.list('courts')).filter(x => sc.seen(x) && (!only || sc.personOf(x) === only));
+  return {
+    courts: rows.map(x => Object.assign(courtView(x, today), { person: sc.personOf(x) })).sort(byDesc('at')),
+    cases: only ? sc.regsOf(only) : [...sc.regs]
+  };
 }
 
 export async function courtGet(d, ctx, app) {
@@ -265,8 +282,15 @@ export async function courtSave(d, ctx, app) {
   if (rows.some(x => x.court === v.court && x.caseNo === v.caseNo && x.year === v.year && x._id !== String(d.id || ''))) fail('duplicate', 'Това дело вече е въведено.');
   const cur = d.id ? rows.find(x => x._id === String(d.id)) : null;
   if (d.id && !cur) fail('notfound', 'Делото не е намерено.');
-  if (cur && !seen(cur, await visibleRegNos(app, ctx), ctx)) fail('notfound', 'Делото не е намерено.');
+  const sc = await courtScope(app, ctx);
+  if (cur && !sc.seen(cur)) fail('notfound', 'Делото не е намерено.');
   const det = detailsOf(cur || {});
+  // дело без преписка – към избраното лице (при преписка лицето е нейното)
+  if (!v.regNo && (!cur || d.person !== undefined)) {
+    const code = line(d.person, 10) || det.person || DEFAULT_CODE;
+    if (!sc.codes.includes(code)) fail('role', 'Нямате достъп до делата на това лице.');
+    det.person = code;
+  }
   if (d.note !== undefined) det.text = str(d.note, 8000);
   if (d.procedure !== undefined) det.procedure = oneOf(d.procedure, PROCEDURES, 'Процесуален ред');
   else if (!cur) det.procedure = /ГПК/.test(v.kind) ? 'ГПК' : 'АПК';
