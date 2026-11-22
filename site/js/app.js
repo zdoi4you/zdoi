@@ -687,7 +687,7 @@ const APPLICANT_FIELDS = () => [
 async function newCaseView() {
   if (!can('inRegEdit') || !can('inReg')) return noAccess('inRegEdit');
   let addressees = [];
-  try { addressees = (await api('addressee.list')).addressees; } catch (_) { addressees = []; }
+  try { addressees = (await api('addressee.list', { person: curCode || '' })).addressees; } catch (_) { addressees = []; }
   const fields = [{ k: 'regNo', label: 'Рег. № (по желание)', max: 60, hint: 'Празно – номерът се дава автоматично (ЗДОИ-ГГГГ-0001).' }]
     .concat(APPLICANT_FIELDS(), [
       { k: 'owner', label: 'Отговорник', type: 'select', options: ownerOptions(), hint: can('assign') ? '' : 'Можете да назначите само себе си; на друг потребител преписката се разпределя от администратор.' },
@@ -1289,7 +1289,7 @@ async function registryView(addressees, tabs) {
     let added = 0, updated = 0;
     try {
       for (let i = 0; i < eiks.length; i += 40) {
-        const r = await api('registry.import', { eiks: eiks.slice(i, i + 40) });
+        const r = await api('registry.import', { eiks: eiks.slice(i, i + 40), person: curCode || '' });
         added += r.added; updated += r.updated;
         if (btn) btn.textContent = 'Добавяне… ' + Math.min(i + 40, eiks.length) + '/' + eiks.length;
       }
@@ -1323,6 +1323,7 @@ async function registryView(addressees, tabs) {
         if (confirm('Да се добавят ли ' + list.length + ' структури в адресатите?')) add(list, e.target);
       } }, 'Добави показаните в адресати') : null,
       can('addressees') ? h('button', { class: 'btn', onclick: async e => { e.target.disabled = true; try { const r = await api('registry.refresh'); toast('Регистърът е обновен: ' + r.name + ' (' + r.count + ').'); addresseesView('registry'); } catch (ex) { toast(ex.message); e.target.disabled = false; } } }, 'Обнови') : null),
+    manyPersons() && curPerson() ? h('p', { class: 'small muted mb-4' }, '„Добави“ ги записва в адресатите на ', h('b', null, curPerson().name), '.') : null,
     h('p', { class: 'small muted mb-12' }, 'Административните структури от Интегрираната информационна система на държавната администрация (ИИСДА) – наименование, ЕИК/БУЛСТАТ, адрес, имейл, телефон. Източник: ',
       h('a', { href: m.source || 'https://data.egov.bg/data/view/fd4218f2-72fa-44f2-853b-79aa1d7d6c2a', target: '_blank', rel: 'noopener noreferrer' }, 'Портал за отворени данни'),
       m.name ? ' – ' + m.name + ' (заредено ' + fmtTime(m.at) + ').' : '.', ' Обновява се автоматично при нов месечен ресурс. При ново заявление субектът се търси и оттук.'),
@@ -1333,12 +1334,12 @@ async function registryView(addressees, tabs) {
 async function addresseesView(query) {
   loading();
   try {
-    const { addressees } = await api('addressee.list');
+    const { addressees } = await api('addressee.list', { person: curCode || '' });
     const tabs = h('div', { class: 'seg' }, h('button', { class: 'btn sm' + (query === 'registry' ? '' : ' primary'), onclick: () => { location.hash = '#/addressees'; } }, 'Моите адресати'),
       h('button', { class: 'btn sm' + (query === 'registry' ? ' primary' : ''), onclick: () => { location.hash = '#/addressees?registry'; } }, 'Регистър на администрациите'));
     if (query === 'registry') return await registryView(addressees, tabs);
     const edit = a => enhanceParty(formDialog(a._id ? 'Адресат' : 'Нов адресат', ADDRESSEE_FIELDS(), a, 'Запази', async v => {
-      await api('addressee.save', Object.assign(v, { id: a._id || '' })); toast('Запазено.'); addresseesView();
+      await api('addressee.save', Object.assign(v, { id: a._id || '', person: curCode || '' })); toast('Запазено.'); addresseesView();
     }, { wide: true }));
     const q = h('input', { type: 'search', placeholder: 'Търсене…', 'aria-label': 'Търсене' });
     const body = h('div');
@@ -1353,7 +1354,7 @@ async function addresseesView(query) {
     };
     q.addEventListener('input', draw);
     setView(head('Адресати', tabs, me.perms.addressees ? h('button', { class: 'btn primary', onclick: () => edit({ type: 'Гражданин' }) }, 'Нов адресат') : null),
-      h('p', { class: 'small muted mb-12' }, 'Заявители, трети лица и органи. Избират се при нова преписка.'),
+      h('p', { class: 'small muted mb-12' }, (manyPersons() && curPerson() ? 'Адресатите на ' + curPerson().name + ' – всяко лице има свой списък (смяна на лицето от горната лента). ' : '') + 'Заявители, трети лица и органи. Избират се при нова преписка.'),
       h('div', { class: 'card' }, h('div', { class: 'filters' }, q), body));
     draw();
   } catch (e) { failView(e); }
@@ -1950,7 +1951,7 @@ async function requestEditView(regNo) {
   let r = null, addressees = [];
   try {
     if (regNo) r = (await api('req.get', { regNo })).request;
-    addressees = (await api('addressee.list')).addressees;
+    addressees = (await api('addressee.list', { person: curCode || '' })).addressees;
   } catch (e) { return failView(e); }
   const v = r ? Object.assign({ mode: r.mode, kind: r.kind, title: r.title, motives: r.motives, noPublish: r.noPublish, person: r.person }, prefixed(r.applicant, 'a_'), prefixed(r.entity, 'e_'))
     : { mode: 'Сдружението', kind: boot.lists.reqKinds[0], e_regBasis: boot.lists.regBasis[2], person: curCode || (personsAll().find(p => p.active) || {}).code };
@@ -2741,10 +2742,10 @@ function oauthCard() {
 async function systemView() {
   loading();
   let s;
-  try { s = await api('system.get'); } catch (e) { return failView(e); }
-  const o = s.org;
+  try { s = await api('system.get', { person: curCode || '' }); } catch (e) { return failView(e); }
+  const o = s.org, pn = s.person || {}, who = pn.name || 'Сдружението';
   const orgFields = [
-    { k: 'name', label: 'Наименование на Сдружението', req: true, max: 250, full: true },
+    { k: 'name', label: 'Наименование', req: true, max: 250, full: true },
     { k: 'brand', label: 'Марка в бланката', max: 60 },
     { k: 'regBasis', label: 'Регистрация', type: 'select', options: boot.lists.regBasis.map(x => [x, x || '—']) },
     { k: 'eik', label: 'ЕИК/БУЛСТАТ', max: 13, pattern: '\\d{9}|\\d{13}' },
@@ -2758,26 +2759,30 @@ async function systemView() {
     { k: 'place', label: 'Място по подразбиране', max: 80 }
   ];
   const orgForm = h('form', null, h('div', { class: 'form-grid' }, orgFields.map(f => field(f, o[f.k]))), h('button', { type: 'submit', class: 'btn primary mt-12' }, 'Запази профила'));
-  onSubmit(orgForm, async v => { await api('system.save', { org: v }); boot = await api('bootstrap'); toast('Профилът е запазен.'); });
+  onSubmit(orgForm, async v => { await api('system.save', { org: v, person: pn.code }); boot = await api('bootstrap'); toast('Профилът на ' + v.name + ' е запазен.'); });
   const run = s.mailLastRun || {};
   const poll = h('input', { type: 'checkbox', checked: s.mailPoll });
-  poll.addEventListener('change', async () => { try { await api('system.save', { mailPoll: poll.checked }); toast(poll.checked ? 'Автоматичното четене е включено.' : 'Автоматичното четене е спряно.'); } catch (e) { toast(e.message); poll.checked = !poll.checked; } });
-  setView(head('Системни процеси'), h('div', { class: 'grid2' },
-    h('section', { class: 'card stack' }, h('h2', null, 'Сдружението – заявител и бланка'), h('p', { class: 'small muted' }, 'Данните излизат в бланката на документите (с логото на ЗДОИ4You и ' + (o.web || 'my.zdoi4you.eu') + ') и като заявител, когато заявлението е от името на Сдружението.'), orgForm),
+  poll.addEventListener('change', async () => { try { await api('system.save', { mailPoll: poll.checked, person: pn.code }); toast(poll.checked ? 'Автоматичното четене е включено.' : 'Автоматичното четене е спряно.'); } catch (e) { toast(e.message); poll.checked = !poll.checked; } });
+  setView(head('Системни настройки', manyPersons() ? h('span', { class: 'pill info' }, who) : null),
+    manyPersons() ? h('p', { class: 'small muted mb-12' }, 'Настройките на ', h('b', null, who), ' – бланка, поща и номерация. Смяна на лицето – от горната лента. Входът, КЕП и базата данни са общи за системата.') : null,
+    h('div', { class: 'grid2' },
+    h('section', { class: 'card stack' }, h('h2', null, who + ' – заявител и бланка'), h('p', { class: 'small muted' }, pn.isDefault === false ? 'Данните излизат в бланката на документите на ' + who + ' (без логото на ЗДОИ4You) и като заявител в неговите заявления.' : 'Данните излизат в бланката на документите (с логото на ЗДОИ4You и ' + (o.web || 'my.zdoi4you.eu') + ') и като заявител, когато заявлението е от името на Сдружението.'), orgForm),
     h('div', { class: 'stack' },
-      h('section', { class: 'card stack' }, h('h2', null, 'Поща на приемната'), kv([
-        ['Кутия', s.mailbox], ['Адрес за отговор (пример)', s.sampleReplyTo], ['Последна проверка', run.at ? fmtTime(run.at) : '—'],
+      h('section', { class: 'card stack' }, h('h2', null, 'Поща на ' + who), kv([
+        ['Кутия', s.mailbox + (s.sharedBox && !pn.isDefault ? ' (общата кутия – отговорите се разпознават по етикета на лицето)' : '')], ['Адрес за отговор (пример)', s.sampleReplyTo], ['Последна проверка', run.at ? fmtTime(run.at) : '—'],
         ['Резултат', run.at ? `прочетени ${run.fetched}, нови ${run.saved}, разпределени ${run.matched}` + (run.boxes && run.boxes.length > 1 ? ' (кутии: ' + run.boxes.length + ')' : '') : '—'], ['Грешка', run.error || '—'],
         ['Неразпределени писма', String(s.unassigned)]]),
         h('label', { class: 'check' }, poll, h('span', null, 'Автоматично четене на всеки 5 минути')),
         h('div', { class: 'actions' },
-          h('button', { class: 'btn primary', onclick: async e => { e.target.disabled = true; try { const r = (await api('system.poll')).run; toast(r.error ? 'Грешка: ' + r.error : `Нови писма: ${r.saved}, разпределени: ${r.matched}.`); systemView(); } catch (ex) { toast(ex.message); } finally { e.target.disabled = false; } } }, 'Провери пощата сега'),
+          h('button', { class: 'btn primary', onclick: async e => { e.target.disabled = true; try { const r = (await api('system.poll', { person: pn.code })).run; toast(r.error ? 'Грешка: ' + r.error : `Нови писма: ${r.saved}, разпределени: ${r.matched}.`); systemView(); } catch (ex) { toast(ex.message); } finally { e.target.disabled = false; } } }, 'Провери пощата сега'),
           h('a', { class: 'btn', href: '#/mail' }, 'Неразпределени'))),
+      h('h2', { class: 'section-title' }, 'Общи за системата'),
       oauthCard(),
       kepCard(),
       h('section', { class: 'card stack' }, h('h2', null, 'Номерация и срокове'), kv([
-        ['Следващ Изх. №', s.nextOutNo], ['Номер на преписка', 'П-ГГГГ-NNNN (изходящи), ВХ-ГГГГ-NNNN (входящ регистър)'],
+        ['Следващ Изх. №', s.nextOutNo], ['Номер на преписка', s.regNoFormat + (pn.isDefault ? ' (изходящи), ВХ-ГГГГ-NNNN (входящ регистър)' : '')],
         ['Напомняния за срокове', 'всеки ден след 8:00 ч. (днес: ' + s.lastReminder + ')']]),
+        (s.registers || []).length > 1 ? h('div', { class: 'small muted' }, 'Всички лица (суперадминистратор):') : null,
         (s.registers || []).length > 1 ? table(['Лице', 'Преписки', 'Следващ Изх. №', 'Кутия'], s.registers.map(x => h('tr', null,
           h('td', null, x.name, x.active ? null : h('span', { class: 'pill ml-4' }, 'спряно')), h('td', { class: 'mono small' }, x.regNo), h('td', { class: 'mono small' }, x.nextOutNo), h('td', { class: 'small' }, x.box)))) : null,
         isSuper() ? h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/persons' }, 'Лица и достъп')) : null),

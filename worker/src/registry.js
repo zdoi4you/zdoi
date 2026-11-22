@@ -8,7 +8,7 @@
 
 import { fail, str, line, stamp, todayIso } from './util.js';
 import { audit } from './core.js';
-import { REG_BASIS } from './persons.js';
+import { REG_BASIS, DEFAULT_CODE, addresseePersons, setAddresseePersons, addresseeScope } from './persons.js';
 
 export const DATASET = 'fd4218f2-72fa-44f2-853b-79aa1d7d6c2a';
 const API = 'https://data.egov.bg/api/';
@@ -125,8 +125,11 @@ export async function registryRefresh(d, ctx, app) {
 export async function registryImport(d, ctx, app) {
   const eiks = (Array.isArray(d.eiks) ? d.eiks : []).map(x => str(x, 13).replace(/\D/g, '')).filter(Boolean).slice(0, 40);
   if (!eiks.length) fail('required', 'Изберете поне една структура.');
+  const code = await addresseeScope(app, ctx, d.person), map = await addresseePersons(app);
   const all = await loadRegistry(app);
-  const rows = await app.store.list('addressees');
+  // само адресатите на това лице – всяко лице има свой списък
+  const rows = (await app.store.list('addressees')).filter(a => (map[a._id] || DEFAULT_CODE) === code);
+  const owned = {};
   let added = 0, updated = 0;
   for (const eik of eiks) {
     const x = all.find(y => y.eik === eik);
@@ -139,10 +142,13 @@ export async function registryImport(d, ctx, app) {
       Object.keys(v).forEach(k => { if (v[k] && v[k] !== (cur[k] || '')) patch[k] = v[k]; });
       if (Object.keys(patch).length) { await app.store.patch('addressees', cur._id, patch); updated++; }
     } else {
-      await app.store.insert('addressees', Object.assign({ by: ctx.username, at: stamp() }, v));
+      const rec = await app.store.insert('addressees', Object.assign({ by: ctx.username, at: stamp() }, v));
+      owned[rec._id] = code;
+      rows.push(Object.assign({ _id: rec._id }, v));
       added++;
     }
   }
+  if (Object.keys(owned).length && code !== DEFAULT_CODE) await setAddresseePersons(app, owned);
   if (added || updated) await audit(app, ctx.username, 'Адресати от регистъра на администрациите', '', 'добавени ' + added + ', обновени ' + updated);
   return { added, updated };
 }

@@ -13,7 +13,7 @@ import { notifyOf } from './auth.js';
 import { usersBrief, assignCheck } from './users.js';
 import { courtView } from './courts.js';
 import { getMailbox, plusOf, mailboxAddress, fromB64 } from './mailbox.js';
-import { REG_BASIS, allPersons, personOf, codeOf, orgProfile, boxOf, regNoFor, outNoFor, tagFor, allowedCodes, saveDefaultProfile } from './persons.js';
+import { REG_BASIS, allPersons, personOf, codeOf, orgProfile, boxOf, regNoFor, outNoFor, tagFor, allowedCodes, saveDefaultProfile, savePersonProfile } from './persons.js';
 
 export { REG_BASIS, orgProfile };
 
@@ -612,10 +612,14 @@ export async function matchRequest(app, msg, requests, box) {
 const markKey = (app, box) => box === mailboxAddress(app.env) ? 'mailWatermark' : 'mailWatermark:' + box;
 
 /* всички кутии: тази на приемната и собствените кутии на активните лица */
-export async function pollMail(app, { manual } = {}) {
-  if (!manual && (await setting(app, 'mailPoll', 'Да')) !== 'Да') return { skipped: 'изключено' };
+export async function pollMail(app, { manual, only } = {}) {
   const persons = await allPersons(app);
-  const boxes = [...new Set([mailboxAddress(app.env)].concat(persons.filter(p => p.active).map(p => boxOf(app, p))))];
+  // кутия се чете, ако поне едно от лицата с нея е с включено автоматично четене (ръчно – винаги)
+  const active = [];
+  for (const p of persons.filter(x => x.active || x.isDefault)) if (manual || (await pollOn(app, p.code))) active.push(p);
+  let boxes = [...new Set(active.map(p => boxOf(app, p)))];
+  if (only) boxes = boxes.filter(b => b === only).concat(boxes.includes(only) ? [] : [only]);
+  if (!boxes.length) return { skipped: 'изключено' };
   const requests = await app.store.list('requests');
   const run = { at: stamp(), fetched: 0, saved: 0, matched: 0, error: '', boxes: [] };
   for (const box of boxes) {
@@ -625,7 +629,9 @@ export async function pollMail(app, { manual } = {}) {
     if (one.error) run.error = (run.error ? run.error + '; ' : '') + (boxes.length > 1 ? box + ': ' : '') + one.error;
     run.boxes.push(Object.assign({ box }, one));
   }
-  await setSetting(app, 'mailLastRun', JSON.stringify(run));
+  const prev = safeJson(await setting(app, 'mailLastRun', '{}'));
+  const merged = Object.assign({}, run, { boxes: run.boxes.concat((prev.boxes || []).filter(x => !run.boxes.some(y => y.box === x.box))) });
+  await setSetting(app, 'mailLastRun', JSON.stringify(merged));
   return run;
 }
 
@@ -674,32 +680,55 @@ async function pollBox(app, box, requests) {
 
 /* ---------- системни процеси (администратор) ---------- */
 
+/* автоматичното четене на пощата: за всяко лице поотделно; без отделна настройка – общата („mailPoll“) */
+const pollKey = code => 'mailPoll:' + code;
+async function pollOn(app, code) {
+  const own = await setting(app, pollKey(code), '');
+  return (own || (await setting(app, 'mailPoll', 'Да'))) === 'Да';
+}
+
+/* системните настройки на избраното лице: бланка, поща, номерация; общите (вход, КЕП, база) – в отделни карти */
 export async function systemGet(d, ctx, app) {
+  const persons = await allPersons(app), codes = await allowedCodes(app, ctx);
+  const code = line(d.person, 10) || (persons.find(p => p.isDefault) || {}).code;
+  const p = persons.find(x => x.code === code);
+  if (!p) fail('notfound', 'Лицето не е намерено.');
+  if (!codes.includes(code)) fail('role', 'Нямате достъп до настройките на това лице.');
   const docs = await app.store.list('docs');
   const y = todayIso().slice(0, 4), used = new Set(docs.map(x => x.outNo));
-  const next = p => { let n = 1; while (used.has(outNoFor(p, y, n))) n++; return outNoFor(p, y, n); };
-  const persons = await allPersons(app), def = persons.find(p => p.isDefault);
+  const next = x => { let n = 1; while (used.has(outNoFor(x, y, n))) n++; return outNoFor(x, y, n); };
+  const box = boxOf(app, p), last = safeJson(await setting(app, 'mailLastRun', '{}'));
+  const boxRun = (last.boxes || []).find(x => x.box === box);
   return {
-    org: await orgProfile(app), mailbox: mailboxAddress(app.env), sampleReplyTo: plusOf(boxOf(app, def), tagFor(def, 'П-' + y + '-0001')),
-    mailPoll: (await setting(app, 'mailPoll', 'Да')) === 'Да', mailWatermark: await setting(app, 'mailWatermark', ''),
-    mailLastRun: safeJson(await setting(app, 'mailLastRun', '{}')), nextOutNo: next(def),
-    registers: persons.map(p => ({ code: p.code, name: p.name, active: p.active, box: boxOf(app, p), nextOutNo: next(p), regNo: regNoFor(p, y, 1).replace(/0001$/, 'NNNN'), replyTo: plusOf(boxOf(app, p), tagFor(p, regNoFor(p, y, 1))) })),
-    unassigned: (await unassigned(app)).length,
+    person: { code: p.code, name: p.name, isDefault: !!p.isDefault, active: p.active, outPrefix: p.outPrefix, mailbox: p.mailbox || '', tagId: p.tagId },
+    org: p.isDefault ? await orgProfile(app) : Object.fromEntries(['name', 'brand', 'regBasis', 'eik', 'address', 'oblast', 'rep', 'repPosition', 'phone', 'email', 'web', 'place'].map(k => [k, p[k] || ''])),
+    mailbox: box, sharedBox: !p.mailbox, sampleReplyTo: plusOf(box, tagFor(p, regNoFor(p, y, 1))),
+    mailPoll: await pollOn(app, code), mailLastRun: boxRun ? Object.assign({ at: last.at }, boxRun) : {},
+    nextOutNo: next(p), regNoFormat: regNoFor(p, y, 1).replace(/0001$/, 'NNNN'),
+    unassigned: (await unassigned(app, [box])).length,
+    // общ преглед на всички лица – само за суперадминистратор
+    registers: ctx.super ? persons.map(x => ({ code: x.code, name: x.name, active: x.active, box: boxOf(app, x), nextOutNo: next(x), regNo: regNoFor(x, y, 1).replace(/0001$/, 'NNNN') })) : [],
     lastReminder: await app.kv.get('remind:' + todayIso()) ? 'днес' : 'не днес'
   };
 }
 
 export async function systemSave(d, ctx, app) {
-  if (d.org) await saveDefaultProfile(app, ctx, d.org);
+  const persons = await allPersons(app);
+  const code = line(d.person, 10) || (persons.find(p => p.isDefault) || {}).code;
+  if (!(await allowedCodes(app, ctx)).includes(code)) fail('role', 'Нямате достъп до настройките на това лице.');
+  if (d.org) await savePersonProfile(app, ctx, code, d.org);
   if (typeof d.mailPoll === 'boolean') {
-    await setSetting(app, 'mailPoll', d.mailPoll ? 'Да' : 'Не');
-    await audit(app, ctx.username, d.mailPoll ? 'Включено автоматично четене на пощата' : 'Спряно автоматично четене на пощата', '', '');
+    await setSetting(app, pollKey(code), d.mailPoll ? 'Да' : 'Не');
+    await audit(app, ctx.username, (d.mailPoll ? 'Включено' : 'Спряно') + ' автоматично четене на пощата', code, '');
   }
-  return systemGet(d, ctx, app);
+  return systemGet(Object.assign({}, d, { person: code }), ctx, app);
 }
 
 export async function systemPoll(d, ctx, app) {
-  const r = await pollMail(app, { manual: true });
+  const code = line(d.person, 10);
+  if (code && !(await allowedCodes(app, ctx)).includes(code)) fail('role', 'Нямате достъп до това лице.');
+  const p = code ? (await allPersons(app)).find(x => x.code === code) : null;
+  const r = await pollMail(app, { manual: true, only: p ? boxOf(app, p) : '' });
   await audit(app, ctx.username, 'Ръчна проверка на пощата', '', JSON.stringify(r));
   return { run: r };
 }

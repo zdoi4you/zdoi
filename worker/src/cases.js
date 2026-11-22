@@ -10,7 +10,7 @@ import { PERM_GROUPS } from './config.js';
 import { notifyOf, permsOf } from './auth.js';
 import { usersBrief, assignCheck } from './users.js';
 import { reqLists, reqDashboard, orgProfile, REG_BASIS, reqScope, withReqDue, SCHEDULED } from './requests.js';
-import { personsFor, codeOf, defaultPersonOf, DEFAULT_CODE } from './persons.js';
+import { personsFor, codeOf, defaultPersonOf, DEFAULT_CODE, addresseePersons, setAddresseePersons, addresseeScope } from './persons.js';
 import { mailboxAddress } from './mailbox.js';
 import { courtLists, courtView, courtDeadlines, detailsOf, visibleCourts, courtTitle } from './courts.js';
 export { COURT_KIND, COURT_INSTANCE, COURT_STATUS, COURTS, courtList, courtSave, courtDelete } from './courts.js';
@@ -336,35 +336,41 @@ function addresseeFields(d) {
 
 /* без право „всички преписки“ потребителят вижда само своите адресати */
 export async function addresseeList(d, ctx, app) {
-  const rows = (await app.store.list('addressees')).filter(a => ctx.perms.casesAll || a.by === ctx.username);
+  const code = await addresseeScope(app, ctx, d.person), map = await addresseePersons(app);
+  const rows = (await app.store.list('addressees')).filter(a => (map[a._id] || DEFAULT_CODE) === code && (ctx.perms.casesAll || a.by === ctx.username));
   return { addressees: rows.map(view).sort((a, b) => a.name.localeCompare(b.name, 'bg')) };
 }
 
 export async function addresseeSave(d, ctx, app) {
-  const v = addresseeFields(d);
+  const v = addresseeFields(d), map = await addresseePersons(app);
   if (d.id) {
     const cur = await app.store.get('addressees', str(d.id, 20));
+    if (cur) await addresseeScope(app, ctx, map[cur._id] || DEFAULT_CODE);
     if (!cur || (!ctx.perms.casesAll && cur.by !== ctx.username)) fail('notfound', 'Адресатът не е намерен.');
     await app.store.patch('addressees', cur._id, v);
     await audit(app, ctx.username, 'Промяна на адресат', v.name, '');
     return { id: cur._id };
   }
+  const code = await addresseeScope(app, ctx, d.person);
   const rec = await app.store.insert('addressees', Object.assign(v, { by: ctx.username, at: stamp() }));
+  if (code !== DEFAULT_CODE) await setAddresseePersons(app, { [rec._id]: code });
   await audit(app, ctx.username, 'Нов адресат', v.name, '');
   return { id: rec._id };
 }
 
 export async function addresseeDelete(d, ctx, app) {
   const cur = await app.store.get('addressees', str(d.id, 20));
+  if (cur) await addresseeScope(app, ctx, (await addresseePersons(app))[cur._id] || DEFAULT_CODE);
   if (!cur || (!ctx.perms.casesAll && cur.by !== ctx.username)) fail('notfound', 'Адресатът не е намерен.');
   await app.store.remove('addressees', cur._id);
+  await setAddresseePersons(app, { [cur._id]: '' });
   await audit(app, ctx.username, 'Изтрит адресат', cur.name, '');
   return {};
 }
 
 async function saveAddresseeFromCase(app, ctx, v) {
-  const rows = await app.store.list('addressees');
-  if (rows.some(a => a.name === v.applicantName && (a.email || '') === v.applicantEmail)) return;
+  const rows = await app.store.list('addressees'), map = await addresseePersons(app);
+  if (rows.some(a => !map[a._id] && a.name === v.applicantName && (a.email || '') === v.applicantEmail)) return;
   await app.store.insert('addressees', {
     type: v.applicantType, name: v.applicantName, eik: v.applicantEik, seat: v.applicantSeat, address: v.applicantAddress,
     oblast: v.applicantOblast, email: v.applicantEmail, phone: v.applicantPhone, by: ctx.username, at: stamp()

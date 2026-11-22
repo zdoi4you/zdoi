@@ -161,6 +161,40 @@ function profileFields(o) {
   return v;
 }
 
+/*
+ * Профилът (данните за бланката) на избраното лице от „Система“ – администратор с право „Системни настройки“ и достъп до
+ * лицето. Кодът, префиксът на Изх. № и пощенската кутия се сменят само от суперадминистратор („Лица и достъп“).
+ */
+export async function savePersonProfile(app, ctx, code, o) {
+  const p = (await allPersons(app)).find(x => x.code === code);
+  if (!p) fail('notfound', 'Лицето не е намерено.');
+  if (!(await allowedCodes(app, ctx)).includes(code)) fail('role', 'Нямате достъп до това лице.');
+  if (p.isDefault) return saveDefaultProfile(app, ctx, o);
+  const v = Object.assign(profileFields(o), { updatedAt: stamp() });
+  await app.store.patch('persons', p._id, v);
+  await dropCache(app, 'persons');
+  await audit(app, ctx.username, 'Промяна на профила на лице', p.code, '');
+}
+
+/*
+ * Адресатите са отделни за всяко лице. Принадлежността се пази в настройката „addrPersons“ ({ id: код }), за да не се
+ * добавя колона в SharePoint; адресат без запис принадлежи на Сдружението (досегашните адресати).
+ */
+export async function addresseePersons(app) {
+  try { const m = JSON.parse((await setting(app, 'addrPersons', '{}')) || '{}'); return m && typeof m === 'object' ? m : {}; } catch (_) { return {}; }
+}
+export async function setAddresseePersons(app, changes) {
+  const m = await addresseePersons(app);
+  Object.entries(changes).forEach(([id, code]) => { if (!code || code === DEFAULT_CODE) delete m[id]; else m[id] = code; });
+  await setSetting(app, 'addrPersons', JSON.stringify(m));
+}
+/* лицето за адресатите: посоченото (ако потребителят има достъп) или Сдружението */
+export async function addresseeScope(app, ctx, code) {
+  const codes = await allowedCodes(app, ctx), c = line(code, 10) || DEFAULT_CODE;
+  if (!codes.includes(c)) fail('role', 'Нямате достъп до адресатите на това лице.');
+  return c;
+}
+
 /* профилът на Сдружението от „Система“ (администратор) */
 export async function saveDefaultProfile(app, ctx, o) {
   const p = await defaultPerson(app);

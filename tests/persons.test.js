@@ -156,3 +156,35 @@ test('адрес за отговор: с кода на лицето; смяна 
   assert.equal((await admin.call('dashboard', { person: 'abc' })).reqTotal, 1);
   assert.equal((await admin.call('dashboard', {})).reqTotal, 2);
 });
+
+test('адресатите и системните настройки са отделни за всяко лице', async () => {
+  const { env, outbox, admin } = await world();
+  // адресати
+  const a1 = await admin.call('addressee.save', { type: 'Гражданин', name: 'Иван', email: 'i@example.org' });
+  const a2 = await admin.call('addressee.save', { type: 'Гражданин', name: 'Мария', email: 'm@example.org', person: 'abc' });
+  assert.deepEqual((await admin.call('addressee.list')).addressees.map(a => a.name), ['Иван']);
+  assert.deepEqual((await admin.call('addressee.list', { person: 'abc' })).addressees.map(a => a.name), ['Мария']);
+  const ivan = await addUser(env, outbox, admin, 'ivan', 'Служител');
+  assert.equal((await ivan.call('addressee.list', { person: 'abc' })).error, 'role');
+  assert.equal((await ivan.call('addressee.save', { id: a2.id, type: 'Гражданин', name: 'X' })).error, 'role');
+  assert.equal((await ivan.call('addressee.delete', { id: a2.id })).error, 'role');
+  assert.equal((await admin.call('addressee.delete', { id: a2.id })).ok, true);
+  assert.equal((await admin.call('addressee.list', { person: 'abc' })).addressees.length, 0);
+  assert.ok(a1.ok);
+  // системни настройки: профил и автоматично четене на пощата по лице
+  const s = await admin.call('system.get', { person: 'abc' });
+  assert.equal(s.person.code, 'abc');
+  assert.equal(s.mailbox, 'abc@zdoi.eu');
+  assert.match(s.nextOutNo, /^АБВ-/);
+  await admin.call('system.save', { person: 'abc', org: Object.assign({}, s.org, { rep: 'Петър Петров' }), mailPoll: false });
+  const s2 = await admin.call('system.get', { person: 'abc' });
+  assert.equal(s2.org.rep, 'Петър Петров');
+  assert.equal(s2.mailPoll, false);
+  assert.equal((await admin.call('system.get', { person: 'zdoi' })).mailPoll, true);
+  assert.notEqual((await admin.call('system.get', { person: 'zdoi' })).org.rep, 'Петър Петров');
+  // кутията на спряното лице не се чете автоматично
+  const app = makeApp(env, env.__store, env.__kv, null);
+  const run = await pollMail(app);
+  assert.ok(!run.boxes.some(b => b.box === 'abc@zdoi.eu'));
+  assert.ok(run.boxes.some(b => b.box === 'priemna@zdoi.eu'));
+});
