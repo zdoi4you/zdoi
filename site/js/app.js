@@ -1274,10 +1274,68 @@ const ADDRESSEE_FIELDS = () => [
   { k: 'phone', label: 'Телефон', type: 'tel', max: 40 }
 ];
 
-async function addresseesView() {
+/* регистърът на административните структури (ИИСДА, data.egov.bg) – търсене, добавяне в адресатите */
+async function registryView(addressees, tabs) {
+  const r0 = await api('registry.search', { q: '', limit: 1, facets: true });
+  const q = h('input', { type: 'search', placeholder: 'Търсене: наименование, БУЛСТАТ, имейл, община…', 'aria-label': 'Търсене' });
+  const kind = h('select', { 'aria-label': 'Вид' }, h('option', { value: '' }, 'Всички видове'), r0.kinds.map(k => h('option', { value: k }, k)));
+  const obl = h('select', { 'aria-label': 'Област' }, h('option', { value: '' }, 'Всички области'), r0.oblasts.map(k => h('option', { value: k }, k)));
+  const body = h('div'), info = h('p', { class: 'small muted' });
+  const have = new Set(addressees.map(a => a.eik).filter(Boolean));
+  let shown = [], timer = null;
+  const add = async (eiks, btn) => {
+    if (btn) btn.disabled = true;
+    let added = 0, updated = 0;
+    try {
+      for (let i = 0; i < eiks.length; i += 40) {
+        const r = await api('registry.import', { eiks: eiks.slice(i, i + 40) });
+        added += r.added; updated += r.updated;
+        if (btn) btn.textContent = 'Добавяне… ' + Math.min(i + 40, eiks.length) + '/' + eiks.length;
+      }
+      eiks.forEach(e => have.add(e));
+      toast('Адресати: добавени ' + added + ', обновени ' + updated + '.');
+      draw();
+    } catch (e) { toast(e.message); if (btn) btn.disabled = false; }
+  };
+  const run = async () => {
+    const r = await api('registry.search', { q: q.value, kind: kind.value, oblast: obl.value, limit: 700 });
+    shown = r.items;
+    info.replaceChildren('Намерени: ' + r.total + ' от ' + r.all + ' структури. ');
+    draw();
+  };
+  const draw = () => {
+    body.replaceChildren(table(['Структура', 'ЕИК/БУЛСТАТ', 'Адрес', 'Имейл и телефон', ''], shown.slice(0, 300).map(x => h('tr', null,
+      h('td', null, h('b', null, x.name), h('div', { class: 'small muted' }, x.kind + (x.parent ? ' · към ' + x.parent : ''))),
+      h('td', { class: 'mono' }, x.eik || '—'),
+      h('td', { class: 'small' }, x.address || '—', x.oblast ? h('div', { class: 'muted' }, 'обл. ' + x.oblast) : null),
+      h('td', { class: 'small' }, x.email ? h('a', { href: 'mailto:' + x.email }, x.email) : '—', x.phone ? h('div', { class: 'muted' }, x.phone) : null, x.web ? h('div', null, h('a', { href: /^https?:/.test(x.web) ? x.web : 'https://' + x.web, target: '_blank', rel: 'noopener noreferrer' }, x.web)) : null),
+      h('td', null, have.has(x.eik) ? h('span', { class: 'pill ok' }, 'в адресатите') : can('addressees') ? h('button', { class: 'btn sm', onclick: e => add([x.eik], e.target) }, 'Добави') : null))),
+      'Няма структури по тези условия.'), ...(shown.length > 300 ? [h('p', { class: 'small muted' }, 'Показани са първите 300 – стеснете търсенето.')] : []));
+  };
+  [q].forEach(x => x.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run().catch(e => toast(e.message)), 200); }));
+  [kind, obl].forEach(x => x.addEventListener('input', () => run().catch(e => toast(e.message))));
+  const m = r0.meta || {};
+  setView(head('Адресати', tabs,
+      can('addressees') ? h('button', { class: 'btn', onclick: e => {
+        const list = shown.filter(x => x.eik && !have.has(x.eik)).map(x => x.eik);
+        if (!list.length) return toast('Всички показани вече са в адресатите.');
+        if (confirm('Да се добавят ли ' + list.length + ' структури в адресатите?')) add(list, e.target);
+      } }, 'Добави показаните в адресати') : null,
+      can('addressees') ? h('button', { class: 'btn', onclick: async e => { e.target.disabled = true; try { const r = await api('registry.refresh'); toast('Регистърът е обновен: ' + r.name + ' (' + r.count + ').'); addresseesView('registry'); } catch (ex) { toast(ex.message); e.target.disabled = false; } } }, 'Обнови') : null),
+    h('p', { class: 'small muted mb-12' }, 'Административните структури от Интегрираната информационна система на държавната администрация (ИИСДА) – наименование, ЕИК/БУЛСТАТ, адрес, имейл, телефон. Източник: ',
+      h('a', { href: m.source || 'https://data.egov.bg/data/view/fd4218f2-72fa-44f2-853b-79aa1d7d6c2a', target: '_blank', rel: 'noopener noreferrer' }, 'Портал за отворени данни'),
+      m.name ? ' – ' + m.name + ' (заредено ' + fmtTime(m.at) + ').' : '.', ' Обновява се автоматично при нов месечен ресурс. При ново заявление субектът се търси и оттук.'),
+    h('div', { class: 'card' }, h('div', { class: 'filters' }, q, kind, obl), info, body));
+  await run();
+}
+
+async function addresseesView(query) {
   loading();
   try {
     const { addressees } = await api('addressee.list');
+    const tabs = h('div', { class: 'seg' }, h('button', { class: 'btn sm' + (query === 'registry' ? '' : ' primary'), onclick: () => { location.hash = '#/addressees'; } }, 'Моите адресати'),
+      h('button', { class: 'btn sm' + (query === 'registry' ? ' primary' : ''), onclick: () => { location.hash = '#/addressees?registry'; } }, 'Регистър на администрациите'));
+    if (query === 'registry') return await registryView(addressees, tabs);
     const edit = a => enhanceParty(formDialog(a._id ? 'Адресат' : 'Нов адресат', ADDRESSEE_FIELDS(), a, 'Запази', async v => {
       await api('addressee.save', Object.assign(v, { id: a._id || '' })); toast('Запазено.'); addresseesView();
     }, { wide: true }));
@@ -1293,7 +1351,7 @@ async function addresseesView() {
           h('button', { class: 'btn sm danger', onclick: async () => { if (!confirm('Да се изтрие ли ' + a.name + '?')) return; try { await api('addressee.delete', { id: a._id }); toast('Изтрит.'); addresseesView(); } catch (e) { toast(e.message); } } }, 'Изтрий')) : null))), 'Няма адресати.'));
     };
     q.addEventListener('input', draw);
-    setView(head('Адресати', me.perms.addressees ? h('button', { class: 'btn primary', onclick: () => edit({ type: 'Гражданин' }) }, 'Нов адресат') : null),
+    setView(head('Адресати', tabs, me.perms.addressees ? h('button', { class: 'btn primary', onclick: () => edit({ type: 'Гражданин' }) }, 'Нов адресат') : null),
       h('p', { class: 'small muted mb-12' }, 'Заявители, трети лица и органи. Избират се при нова преписка.'),
       h('div', { class: 'card' }, h('div', { class: 'filters' }, q), body));
     draw();
@@ -1858,6 +1916,32 @@ const PARTY_FIELDS = (prefix, opts = {}) => [
 const pick = (v, prefix) => { const o = {}; Object.keys(v).filter(k => k.startsWith(prefix)).forEach(k => { o[k.slice(prefix.length)] = v[k]; }); return o; };
 const prefixed = (obj, prefix) => { const o = {}; Object.keys(obj || {}).forEach(k => { o[prefix + k] = obj[k]; }); return o; };
 
+/* търсене на задължения субект: първо адресатите, после регистърът на административните структури (ИИСДА) */
+function entitySearch(addressees, pick) {
+  const input = h('input', { type: 'search', placeholder: 'Наименование, БУЛСТАТ или имейл – адресати и регистър на администрациите', autocomplete: 'off', 'aria-label': 'Търсене на субект' });
+  const list = h('div', { class: 'search-results in-form', role: 'listbox', hidden: true });
+  let timer = null;
+  const low = v => String(v || '').toLowerCase();
+  const run = async () => {
+    const t = low(input.value.trim());
+    if (t.length < 2) { list.hidden = true; return; }
+    const own = addressees.filter(a => [a.name, a.eik, a.email].some(v => low(v).includes(t))).slice(0, 6);
+    let reg = [];
+    try { reg = (await api('registry.search', { q: input.value.trim(), limit: 8 })).items.filter(x => !own.some(a => a.eik && a.eik === x.eik)); } catch (_) { reg = []; }
+    const row = (kind, name, sub, onPick) => h('a', { href: '#', role: 'option', onclick: e => { e.preventDefault(); onPick(); list.hidden = true; input.value = ''; } },
+      h('span', { class: 'sr-kind' }, kind), h('span', { class: 'sr-main' }, h('b', null, name), h('span', null, sub)));
+    const items = own.map(a => row('Адресат', a.name, [a.eik, a.email].filter(Boolean).join(' · '), () => pick(a, false)))
+      .concat(reg.map(x => row('ИИСДА', x.name, [x.eik, x.email, x.oblast].filter(Boolean).join(' · '), () => pick({ name: x.name, regBasis: boot.lists.regBasis[2], eik: x.eik, address: x.address, oblast: x.oblast, email: x.email, phone: x.phone }, true))));
+    list.replaceChildren(...(items.length ? items : [h('div', { class: 'empty' }, 'Няма намерени. Попълнете данните ръчно.')]));
+    list.hidden = false;
+  };
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 200); });
+  input.addEventListener('keydown', e => { if (e.key === 'Escape') list.hidden = true; if (e.key === 'Enter') { e.preventDefault(); const a = list.querySelector('a'); if (a) a.click(); } });
+  document.addEventListener('click', e => { if (!input.parentNode || !input.parentNode.contains(e.target)) list.hidden = true; });
+  return h('label', { class: 'field full entity-search' }, h('span', null, 'Търсене на субекта'), h('div', { class: 'search-wrap' }, input, list),
+    h('small', null, 'Данните на административните структури са от регистъра на ИИСДА (data.egov.bg). Проверете имейла за заявления по ЗДОИ на сайта на органа.'));
+}
+
 async function requestEditView(regNo) {
   if (!regNo && !can('reqCreate')) return noAccess('reqCreate');
   if (regNo && !can('reqEdit')) return noAccess('reqEdit');
@@ -1880,13 +1964,10 @@ async function requestEditView(regNo) {
   const modeSel = field({ k: 'mode', label: 'Заявлението е от името на', type: 'select', options: modeOpts(), req: true }, v.mode);
   const applicantBox = h('fieldset', null, h('legend', null, 'Заявител (клиент)'), h('div', { class: 'form-grid' }, PARTY_FIELDS('a_', { type: true, rep: true, req: true, nameLabel: 'Имена или наименование' }).map(f => field(f, v[f.k]))),
     h('p', { class: 'small muted mt-8' }, 'Приложете пълномощно към заявлението (в документа – „Приложения“).'));
-  const entityPick = addressees.length ? h('label', { class: 'field' }, h('span', null, 'Избор от адресатите'),
-    h('select', { onchange: e => {
-      const a = addressees.find(x => x._id === e.target.value);
-      if (!a) return;
-      ['name', 'regBasis', 'eik', 'address', 'oblast', 'email', 'phone'].forEach(k => { const el = form.elements['e_' + k]; if (el) { el.value = a[k] || ''; el.dispatchEvent(new Event('change')); } });
-      form.elements.e_id.value = a._id;
-    } }, h('option', { value: '' }, '— изберете —'), addressees.map(a => h('option', { value: a._id }, a.name + (a.email ? ' · ' + a.email : ''))))) : null;
+  const entityPick = entitySearch(addressees, (a, fromRegistry) => {
+    ['name', 'regBasis', 'eik', 'address', 'oblast', 'email', 'phone'].forEach(k => { const el = form.elements['e_' + k]; if (el) { el.value = a[k] || ''; el.dispatchEvent(new Event('change')); } });
+    form.elements.e_id.value = fromRegistry ? '' : a._id;
+  });
   const points = pointsEditor(r ? r.points : [], 'Искана информация (по точки)');
   const accessBox = h('div', { class: 'field full' }, h('span', null, 'Форма на достъп (чл. 26, ал. 1 ЗДОИ)'),
     boot.lists.accessForms.map((a, i) => h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'acc_' + i, checked: r ? r.access.includes(a) : i === 3 }), h('span', null, a))));
@@ -2844,7 +2925,7 @@ async function route() {
     case 'calendar': return calendarView(query);
     case 'courts': return courtsView(query);
     case 'court': return courtPage(parts[1]);
-    case 'addressees': return addresseesView();
+    case 'addressees': return addresseesView(query);
     case 'departments': return departmentsView();
     case 'users': return can('users') ? usersView() : noAccess('users');
     case 'log': return can('log') ? logView() : noAccess('log');

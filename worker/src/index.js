@@ -22,6 +22,7 @@ import * as acme from './acme.js';
 import * as kep from './kep.js';
 import * as persons from './persons.js';
 import * as courts from './courts.js';
+import * as registry from './registry.js';
 import { ROLE_SUPER, isAdminRole } from './config.js';
 import { SCHEMA_VER } from './schema.js';
 
@@ -68,6 +69,9 @@ export const ACTIONS = {
   'court.epepRaw': { auth: 'user', fn: courts.courtEpepRaw },
   'addressee.list': { auth: 'user', fn: cases.addresseeList },
   'addressee.save': { auth: 'user', perm: 'addressees', fn: cases.addresseeSave },
+  'registry.search': { auth: 'user', fn: registry.registrySearch },
+  'registry.refresh': { auth: 'user', perm: 'addressees', fn: registry.registryRefresh },
+  'registry.import': { auth: 'user', perm: 'addressees', fn: registry.registryImport },
   'addressee.delete': { auth: 'user', perm: 'addressees', fn: cases.addresseeDelete },
   'department.list': { auth: 'user', fn: users.departmentsList },
   'department.save': { auth: 'user', perm: 'departments', fn: users.departmentsSave },
@@ -276,6 +280,8 @@ export default {
       .then(() => cases.remindDeadlines(app)).then(r => console.log('напомняния', JSON.stringify(r)))
       // делата в ЕПЕП – веднъж на ден след 7:00 ч., по няколко на пускане
       .then(() => courts.epepDaily(app)).then(r => { if (r.checked || r.errors) console.log('ЕПЕП', JSON.stringify(r)); }, e => console.error('ЕПЕП: ' + e.message))
+      // регистърът на административните структури (data.egov.bg) – нов ресурс веднъж месечно, проверка веднъж на ден
+      .then(() => registry.registryDaily(app)).then(r => { if (r.updated) console.log('регистър', JSON.stringify(r)); }, e => console.error('регистър: ' + e.message))
       .then(() => acme.ensureCert(app)).then(r => console.log('сертификат за КЕП', JSON.stringify(r))));
   }
 };

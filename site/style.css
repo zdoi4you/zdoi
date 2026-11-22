@@ -411,3 +411,6 @@ td .actions { flex-wrap: nowrap; }
 .seg { display: inline-flex; gap: 4px; }
 tr.canceled td { text-decoration: line-through; opacity: .65; }
 tr.canceled td:last-child, tr.canceled td:nth-child(4) { text-decoration: none; }
+.search-wrap { position: relative; }
+.search-results.in-form { top: calc(100% + 2px); max-height: 340px; }
+.search-results.in-form a { grid-template-columns: 70px minmax(0, 1fr); }
