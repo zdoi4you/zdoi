@@ -121,3 +121,18 @@ test('тикети: подаване, видимост, отговори, вът
   const log = (await admin.call('log.list')).log;
   assert.ok(log.some(l => l.action === 'Нов тикет' && l.ref === c.no));
 });
+
+test('опити за печат и снимка на екрана се записват в дневника; ограничение на записите', async () => {
+  const { admin } = await ready();
+  const r = await admin.call('guard.report', { kind: 'печат', page: 'Заявление П-2026-0001 · #/request/П-2026-0001', how: 'Ctrl+P' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.logged, true);
+  await admin.call('guard.report', { kind: 'снимка на екрана', page: 'Табло · #/dashboard', how: 'PrintScreen' });
+  const log = (await admin.call('log.list')).log;
+  const p = log.find(l => l.action === 'Опит за печат');
+  assert.ok(p && /П-2026-0001/.test(p.ref) && p.details === 'Ctrl+P' && p.actor === 'admin' && p.ip === '203.0.113.5');
+  assert.ok(log.some(l => l.action === 'Опит за снимка на екрана'));
+  assert.equal((await admin.call('guard.report', { kind: 'друго' })).error, 'value');
+  for (let i = 0; i < 30; i++) await admin.call('guard.report', { kind: 'печат' });
+  assert.equal((await admin.call('guard.report', { kind: 'печат' })).logged, false);
+});

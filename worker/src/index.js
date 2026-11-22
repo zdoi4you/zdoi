@@ -79,6 +79,7 @@ export const ACTIONS = {
   'help.save': { auth: 'admin', perm: 'help', fn: help.helpSave },
   'help.delete': { auth: 'admin', perm: 'help', fn: help.helpDelete },
   'help.import': { auth: 'admin', perm: 'help', big: true, fn: help.helpImport },
+  'guard.report': { auth: 'user', fn: help.guardReport },
   'ticket.list': { auth: 'user', fn: help.ticketList },
   'ticket.count': { auth: 'user', fn: help.ticketCount },
   'ticket.get': { auth: 'user', fn: help.ticketGet },

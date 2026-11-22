@@ -502,13 +502,14 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--gray
   body.nav-rail .clock b { font-size: 13px; }
 }
 @media (max-width: 1000px) { .side-rail { display: none; } }
-/* защита на ръководството: без маркиране, печат и снимки (размазване при излизане от прозореца); воден знак */
+/* защита: печат и снимки в цялата система (след вход); в ръководството – и без маркиране, с воден знак */
 .protected { position: relative; }
 body.guard .protected { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 body.guard .protected .wm { position: absolute; inset: 0; pointer-events: none; z-index: 2; background-repeat: repeat; }
-body.guard.shield .protected { filter: blur(16px); }
-body.guard.shield #view::before { content: "Скрито – върнете се в прозореца"; position: fixed; top: 45%; left: 50%; transform: translateX(-50%); z-index: 20; padding: 10px 16px; border-radius: 10px; background: var(--card); color: var(--ink); font-weight: 600; }
+body.sys-guard.shield #view, body.sys-guard.shield .side, body.sys-guard.shield .topbar, body.sys-guard.shield dialog, body.sys-guard.shield .nav-fly { filter: blur(16px); }
+body.sys-guard.shield::after { content: "Скрито – върнете се в прозореца на системата"; position: fixed; top: 45%; left: 50%; transform: translateX(-50%); z-index: 100; padding: 12px 18px; border-radius: 10px; background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-lg); }
 @media print {
-  body.guard #app, body.guard dialog, body.guard .nav-fly { display: none !important; }
-  body.guard::before { content: "Печатът на ръководството не е разрешен. Ръководството е само за преглед в системата."; display: block; padding: 48px; font: 16px sans-serif; }
+  body.sys-guard #app, body.sys-guard dialog, body.sys-guard .nav-fly, body.sys-guard #toast { display: none !important; }
+  body.sys-guard::before { content: "Печатът от системата не е разрешен. Опитът е записан в дневника."; display: block; padding: 48px; font: 16px sans-serif; }
+  body.sys-guard::after { display: none !important; }
 }

@@ -3256,37 +3256,65 @@ function mdRender(src) {
 }
 
 /*
- * Защита на ръководството: текстът не се маркира и копира, печатът (и „Печат в PDF“) показва празна страница,
- * клавишите за печат, запис, копиране и PrintScreen се спират, а при излизане от прозореца (инструменти за снимка
- * на екрана) съдържанието се размазва. Върху текста има воден знак с потребителя и часа. Браузърът не може да
- * спре напълно снимка с външна програма или телефон – водният знак показва чия е.
+ * Защита в цялата система (след вход): печатът и „Печат в PDF“ дават празна страница, PrintScreen и известните
+ * клавиши за снимка на екрана се спират, а при излизане от прозореца (инструментите за снимка го правят) съдържанието
+ * се размазва. Всеки опит се записва в дневника (потребител, страница, начин, IP).
+ * В ръководството освен това текстът не се маркира и копира, а върху него има воден знак с потребителя и часа.
+ * Браузърът не може напълно да спре снимка с външна програма или телефон.
+ * Изтеглянето на документите (PDF по преписките) не е засегнато.
  */
-const GUARD_MSG = 'Ръководството е само за преглед в системата: копиране, печат и снимки на екрана не са разрешени.';
+const GUARD_MSG = 'Печатът и снимките на екрана в системата не са разрешени. Опитът е записан в дневника.';
+const GUARD_HELP = 'Ръководството е само за преглед в системата: копиране, печат и снимки на екрана не са разрешени. Опитът е записан в дневника.';
 function guard(on) {
   document.body.classList.toggle('guard', !!on);
-  if (!on) document.body.classList.remove('shield');
+  document.body.classList.toggle('sys-guard', !!me);
+  if (!me) document.body.classList.remove('shield');
 }
 const guarded = () => document.body.classList.contains('guard');
-const shield = on => { if (guarded()) document.body.classList.toggle('shield', on); };
+const sysGuarded = () => !!me && document.body.classList.contains('sys-guard');
+const shield = on => { if (sysGuarded()) document.body.classList.toggle('shield', on); };
+const flash = () => { shield(true); setTimeout(() => { if (document.hasFocus()) shield(false); }, 1500); };
+/* съобщава опита на сървъра – един и същ вид най-много веднъж на 5 секунди */
+const reported = {};
+function reportTry(kind, how) {
+  if (!me) return;
+  const now = Date.now();
+  if (reported[kind] && now - reported[kind] < 5000) return;
+  reported[kind] = now;
+  const hash = location.hash || '#/dashboard';
+  api('guard.report', { kind, how, page: pageLabel(hash) + ' · ' + hash }).catch(() => { /* без мрежа – само предупреждението */ });
+}
 document.addEventListener('keydown', e => {
-  if (!guarded()) return;
-  const k = (e.key || '').toLowerCase();
-  if (k === 'printscreen' || ((e.ctrlKey || e.metaKey) && ['p', 's', 'c', 'x', 'a', 'u'].includes(k) && !e.target.closest('input, textarea, select')) || ((e.ctrlKey || e.metaKey) && e.shiftKey && ['s', 'i', 'c'].includes(k))) {
-    e.preventDefault(); e.stopPropagation();
-    if (k === 'printscreen') { shield(true); setTimeout(() => shield(false), 1500); }
-    toast(GUARD_MSG);
-  }
+  if (!sysGuarded()) return;
+  const k = (e.key || '').toLowerCase(), mod = e.ctrlKey || e.metaKey;
+  const combo = [e.ctrlKey ? 'Ctrl' : '', e.metaKey ? 'Win/Cmd' : '', e.altKey ? 'Alt' : '', e.shiftKey ? 'Shift' : '', (e.key || '').length === 1 ? e.key.toUpperCase() : e.key].filter(Boolean).join('+');
+  let kind = '';
+  if (k === 'printscreen') kind = 'снимка на екрана';
+  else if (mod && !e.shiftKey && k === 'p') kind = 'печат';
+  else if ((e.metaKey && e.shiftKey && ['3', '4', '5', 's'].includes(k)) || (e.ctrlKey && e.shiftKey && k === 's')) kind = 'снимка на екрана';
+  else if (guarded() && mod && ['s', 'c', 'x', 'a', 'u'].includes(k) && !e.target.closest('input, textarea, select, dialog')) kind = ['c', 'x', 's'].includes(k) ? 'копиране на ръководството' : 'блок';
+  if (!kind) return;
+  e.preventDefault(); e.stopPropagation();
+  if (kind === 'снимка на екрана') flash();
+  if (kind !== 'блок') reportTry(kind, combo);
+  toast(guarded() ? GUARD_HELP : GUARD_MSG);
 }, true);
 document.addEventListener('keyup', e => {
-  if (guarded() && (e.key || '').toLowerCase() === 'printscreen') {
-    try { navigator.clipboard.writeText(GUARD_MSG).catch(() => {}); } catch (_) { /* без достъп до клипборда */ }
-    toast(GUARD_MSG);
-  }
+  if (!sysGuarded() || (e.key || '').toLowerCase() !== 'printscreen') return;
+  // на Windows PrintScreen често стига само като keyup: снимката вече е в клипборда – заменя се с текст
+  try { navigator.clipboard.writeText(GUARD_MSG).catch(() => {}); } catch (_) { /* без достъп до клипборда */ }
+  flash();
+  reportTry('снимка на екрана', 'PrintScreen');
+  toast(GUARD_MSG);
 }, true);
 ['copy', 'cut', 'contextmenu', 'dragstart', 'selectstart'].forEach(ev => document.addEventListener(ev, e => {
-  if (guarded() && e.target.closest && e.target.closest('.protected')) { e.preventDefault(); if (ev !== 'selectstart') toast(GUARD_MSG); }
+  if (!(guarded() && e.target.closest && e.target.closest('.protected'))) return;
+  e.preventDefault();
+  if (ev === 'copy' || ev === 'cut') reportTry('копиране на ръководството', ev === 'copy' ? 'копиране' : 'изрязване');
+  if (ev !== 'selectstart') toast(GUARD_HELP);
 }, true));
-window.addEventListener('beforeprint', () => { if (guarded()) toast(GUARD_MSG); });
+/* печат от менюто на браузъра („Печат“, „Запази като PDF“) – страницата излиза празна (CSS), опитът се записва */
+window.addEventListener('beforeprint', () => { if (sysGuarded()) { reportTry('печат', 'меню на браузъра'); toast(GUARD_MSG); } });
 window.addEventListener('blur', () => shield(true));
 window.addEventListener('focus', () => setTimeout(() => shield(false), 300));
 document.addEventListener('visibilitychange', () => shield(document.hidden));

@@ -257,3 +257,18 @@ export async function ticketUpdate(d, ctx, app) {
   }
   return { changed };
 }
+
+/* ---------- опити за печат, снимка на екрана и копиране – в дневника ---------- */
+
+export const GUARD_KINDS = ['снимка на екрана', 'печат', 'копиране на ръководството'];
+
+/* браузърът съобщава опита; в дневника – потребител, страница, начин и IP (до 30 записа на 10 минути на потребител) */
+export async function guardReport(d, ctx, app) {
+  const kind = oneOf(d.kind, GUARD_KINDS, 'Вид');
+  const key = 'gr:' + ctx.username;
+  const n = Number(await app.kv.get(key)) || 0;
+  if (n >= 30) return { logged: false };
+  await app.kv.put(key, String(n + 1), { expirationTtl: 600 });
+  await audit(app, ctx.username, 'Опит за ' + kind, line(d.page, 200), line(d.how, 120));
+  return { logged: true };
+}
