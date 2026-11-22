@@ -95,3 +95,38 @@ test('участие в организации: физическо лице по
   assert.deepEqual(o.participation.map(x => x.uic), ['333333333']);
   assert.deepEqual(o.participation[0].roles, ['Едноличен собственик на капитала']);
 });
+
+test('търсене на организация по наименование: ТР/ЮЛНЦ (Summary, общ брой от заглавката) и БУЛСТАТ (rpt2); кеш; невалиден вход', async () => {
+  const { env, admin } = await ready();
+  const urls = [];
+  env.__cr = async url => {
+    urls.push(url);
+    const u = new URL(url);
+    if (u.pathname.endsWith('/Summary')) return new Response(JSON.stringify([{ isPhysical: false, ident: '176652928', name: 'Ветеринари в действие', companyFullName: '"Ветеринари в действие" Сдружение' }, { isPhysical: true, ident: '', name: 'ЛИЦЕ' }]), { headers: { count: '29' } });
+    return new Response('');
+  };
+  env.__bulstat = async url => {
+    urls.push(url);
+    return new Response(`<table><tr><th>Субект</th></tr>
+<tr valign="top" id="__TOC_0"><td><div><a href="https://reports.bulstat.bg/bulstat-ireports/preview?__report=x&amp;subjectId=230048583" target="_blank">ФОНД &quot;ЕДИНЕНИЕ&quot;</a></div></td><td><div><div style="visibility:hidden">&#xa0;</div></div></td><td><div></div></td></tr>
+<tr valign="top" id="__TOC_1"><td><div><a href="https://x/?subjectId=201493" target="_blank">СДРУЖЕНИЕ "ИЗКУСТВО В ДЕЙСТВИЕ"</a></div></td><td><div>000682647</div></td><td><div>123</div></td></tr>
+<tr><td colspan="3"><table><tr><td><div>Общо:</div></td><td><div class="style_23">85</div></td></tr></table></td></tr></table>`);
+  };
+  const r = await admin.call('verify.name', { name: '  в  действие ' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.name, 'в действие');
+  assert.equal(r.cr.total, 29);
+  assert.deepEqual(r.cr.items.map(x => x.eik), ['176652928']);
+  assert.match(r.cr.items[0].link, /uic=176652928$/);
+  assert.equal(r.bulstat.total, 85);
+  assert.deepEqual(r.bulstat.items.map(x => [x.eik, x.name]), [['', 'ФОНД "ЕДИНЕНИЕ"'], ['000682647', 'СДРУЖЕНИЕ "ИЗКУСТВО В ДЕЙСТВИЕ"']]);
+  assert.equal(r.bulstat.items[0].link, 'https://reports.bulstat.bg/bulstat-ireports/preview?__report=x&subjectId=230048583');
+  assert.equal(r.bulstat.items[1].old, '123');
+  assert.ok(urls.some(u => /Summary\?.*pageSize=25.*selectedSearchFilter=1/.test(u)));
+  assert.ok(urls.some(u => /rpt2\.rptdesign.*fullName=%D0%B2%20%D0%B4/.test(u)));
+  const n = urls.length;
+  assert.equal((await admin.call('verify.name', { name: 'В ДЕЙСТВИЕ' })).cached, true);
+  assert.equal(urls.length, n);
+  assert.equal((await admin.call('verify.name', { name: 'а-' })).error, 'value');
+  assert.equal((await admin.call('verify.name', {})).error, 'required');
+});

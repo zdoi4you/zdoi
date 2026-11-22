@@ -1978,20 +1978,43 @@ function verifyView(query) {
       out);
     return;
   }
-  const input = h('input', { type: 'text', inputmode: 'numeric', maxlength: 13, placeholder: 'ЕИК или код по БУЛСТАТ (9 или 13 цифри)', 'aria-label': 'ЕИК/БУЛСТАТ', value: q.get('eik') || '' });
+  const input = h('input', { type: 'text', maxlength: 120, placeholder: 'ЕИК/код по БУЛСТАТ (9 или 13 цифри) или наименование', 'aria-label': 'ЕИК/БУЛСТАТ или наименование', value: q.get('eik') || q.get('name') || '' });
   const run = async fresh => {
-    const eik = input.value.replace(/\D/g, '');
-    if (!/^(\d{9}|\d{13})$/.test(eik)) return toast('Въведете 9 или 13 цифри.');
-    history.replaceState(null, '', '#/verify?eik=' + eik);
+    const v = input.value.trim(), eik = v.replace(/[\s-]/g, '');
     out.replaceChildren(h('p', { class: 'loading' }, 'Проверка…'));
-    try { out.replaceChildren(verifyResult(await api('verify.eik', { eik, fresh: !!fresh }))); } catch (e) { out.replaceChildren(h('p', { class: 'err' }, e.message)); }
+    if (/^\d+$/.test(eik)) {
+      if (!/^(\d{9}|\d{13})$/.test(eik)) { out.replaceChildren(); return toast('ЕИК/БУЛСТАТ е от 9 или 13 цифри.'); }
+      history.replaceState(null, '', '#/verify?eik=' + eik);
+      try { out.replaceChildren(verifyResult(await api('verify.eik', { eik, fresh: !!fresh }))); } catch (e) { out.replaceChildren(h('p', { class: 'err' }, e.message)); }
+      return;
+    }
+    if (v.replace(/[^\p{L}\p{N}]/gu, '').length < 3) { out.replaceChildren(); return toast('Въведете поне 3 букви от наименованието.'); }
+    history.replaceState(null, '', '#/verify?name=' + encodeURIComponent(v));
+    try { out.replaceChildren(nameResult(await api('verify.name', { name: v, fresh: !!fresh }))); } catch (e) { out.replaceChildren(h('p', { class: 'err' }, e.message)); }
   };
   input.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
   setView(head('Проверки в регистрите'), tabs,
-    h('p', { class: 'small muted mb-12' }, 'Актуално състояние в Търговския регистър и регистъра на ЮЛНЦ (Агенция по вписванията) и в регистър БУЛСТАТ: наименование, правна форма, седалище и адрес, имейл, представители, състояние (вписан, заличен, в ликвидация, несъстоятелност), принадлежност и участие в други организации.'),
+    h('p', { class: 'small muted mb-12' }, 'Актуално състояние в Търговския регистър и регистъра на ЮЛНЦ (Агенция по вписванията) и в регистър БУЛСТАТ: наименование, правна форма, седалище и адрес, имейл, представители, състояние (вписан, заличен, в ликвидация, несъстоятелност), принадлежност и участие в други организации. Търси се по ЕИК/БУЛСТАТ или по част от наименованието – от списъка изберете организацията за пълна проверка.'),
     h('div', { class: 'card stack mb-16' }, h('div', { class: 'filters m-0' }, input, h('button', { class: 'btn primary', onclick: () => run() }, 'Провери'), h('button', { class: 'btn', title: 'Без запомнения резултат', onclick: () => run(true) }, 'Провери наново'))),
     out);
   if (input.value) run();
+}
+
+/* резултат от търсене по наименование: съвпаденията в ТР/ЮЛНЦ и в БУЛСТАТ, всяко – към проверката по ЕИК */
+function nameResult(r) {
+  const card = (title, x, more) => h('section', { class: 'card stack' },
+    h('div', { class: 'head m-0' }, h('h2', null, title), x.error ? h('span', { class: 'pill warn' }, 'недостъпен') : h('span', { class: 'pill' }, x.total + ' съвпадения')),
+    x.error ? h('p', { class: 'warn-text small' }, x.error) : (x.items || []).length ? h('div', { class: 'stack' },
+      x.total > x.items.length ? h('p', { class: 'small muted' }, 'Показани са първите ' + x.items.length + ' – уточнете наименованието' + more + '.') : null,
+      h('ul', { class: 'list-plain' }, x.items.map(o => h('li', null,
+        h('span', null, h('a', { href: o.link, target: '_blank', rel: 'noopener noreferrer' }, o.name), o.old ? h('span', { class: 'small muted' }, ' · стар код ' + o.old) : null),
+        o.eik ? h('a', { class: 'btn sm', href: '#/verify?eik=' + o.eik, title: 'Проверка на организацията' }, o.eik) : h('span', { class: 'small muted' }, 'без код')))))
+      : h('p', { class: 'empty' }, 'Няма организация с такова наименование.'));
+  return h('div', { class: 'stack' },
+    h('div', { class: 'grid2' },
+      card('Търговски регистър и регистър на ЮЛНЦ', r.cr || {}, ''),
+      card('Регистър БУЛСТАТ', r.bulstat || {}, ' (търси се по пълното наименование)')),
+    h('p', { class: 'small muted' }, 'Търсено „' + r.name + '“ ' + fmtTime(r.at) + (r.cached ? ' (от последните 12 часа)' : '') + '. Източници: Агенция по вписванията и регистър БУЛСТАТ.'));
 }
 
 function enhanceParty(root, prefix = '') {

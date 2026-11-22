@@ -73,6 +73,7 @@ export const ACTIONS = {
   'registry.search': { auth: 'user', fn: registry.registrySearch },
   'verify.eik': { auth: 'user', fn: verify.verifyEik },
   'verify.person': { auth: 'user', fn: verify.verifyPerson },
+  'verify.name': { auth: 'user', fn: verify.verifyName },
   'registry.refresh': { auth: 'user', perm: 'addressees', fn: registry.registryRefresh },
   'registry.import': { auth: 'user', perm: 'addressees', fn: registry.registryImport },
   'registry.monImport': { auth: 'user', perm: 'addressees', big: true, fn: registry.registryMonImport },

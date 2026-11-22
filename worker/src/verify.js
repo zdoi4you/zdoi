@@ -195,6 +195,54 @@ export async function orgParticipation(app, eik, history) {
 
 const safe = p => p.catch(e => ({ error: e.message }));
 
+/* ---------- търсене на организация по наименование ---------- */
+
+/* Търговски регистър и регистър на ЮЛНЦ: GET /CR/api/Deeds/Summary?name&selectedSearchFilter=1 – до 25 на страница (повече – 400), общият брой е в заглавката count */
+export async function searchCR(app, name, size = 25) {
+  const f = app.env.__cr || fetch;
+  const r = await fetchRetry(f, CR + '/CR/api/Deeds/Summary?' + qs({ page: 1, pageSize: size, name, ident: '', selectedSearchFilter: 1 }), { headers: { 'User-Agent': UA, Accept: 'application/json', 'Accept-Language': 'bg' } },
+    'Търговският регистър (portal.registryagency.bg)', app.env.__cr ? [] : undefined);
+  const body = await r.text();
+  let rows = [];
+  if (body.trim()) { try { rows = JSON.parse(body); } catch (_) { fail('external', 'Търговският регистър върна неочакван отговор.'); } }
+  const items = (Array.isArray(rows) ? rows : []).filter(x => x && !x.isPhysical && x.ident).map(x => ({ eik: String(x.ident), name: t(x.companyFullName || x.name), link: crLink(x.ident) }));
+  return { total: Number(r.headers.get('count')) || items.length, items };
+}
+
+/* регистър БУЛСТАТ: „Справка за свързаност на нефизическо лице“ (rpt2) по пълно наименование – наименование, код, стари кодове */
+export function parseBulstatList(html) {
+  const items = [];
+  for (const m of String(html || '').matchAll(/<tr[^>]*id="__TOC_\d+"[^>]*>([\s\S]*?)<\/tr>/g)) {
+    const cells = [...m[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(c => c[1]);
+    const a = /<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/.exec(cells[0] || '');
+    if (!a) continue;
+    const eik = text(cells[1]).replace(/\D/g, '');
+    items.push({ eik, name: t(text(a[2])), old: t(text(cells[2])), link: eik ? bulstatLink(eik) : ent(a[1]) });
+  }
+  const total = Number((/Общо:[\s\S]*?<div[^>]*>\s*(\d+)\s*<\/div>/.exec(html) || [])[1]) || items.length;
+  return { total, items };
+}
+
+export async function searchBulstat(app, name) {
+  const f = app.env.__bulstat || fetch;
+  const r = await fetchRetry(f, BS + '/preview?__report=https%3A%2F%2Freports.bulstat.bg%2Fbulstat-ireports%2Frpt2.rptdesign&__format=html&__locale=bg&fullName=' + encodeURIComponent(name),
+    { headers: { 'User-Agent': UA, Accept: 'text/html' } }, 'Регистър БУЛСТАТ (reports.bulstat.bg)', app.env.__bulstat ? [] : undefined);
+  return parseBulstatList(await r.text());
+}
+
+export async function verifyName(d, ctx, app) {
+  const name = t(str(d.name, 120));
+  if (!name) fail('required', 'Въведете наименование.');
+  if (name.replace(/[^\p{L}\p{N}]/gu, '').length < 3) fail('value', 'Въведете поне 3 букви или цифри от наименованието.');
+  const key = 'chkn:' + name.toLowerCase();
+  if (!d.fresh) { const hit = await app.kv.get(key); if (hit) return Object.assign(JSON.parse(hit), { cached: true }); }
+  const [cr, bulstat] = await Promise.all([safe(searchCR(app, name)), safe(searchBulstat(app, name))]);
+  const res = { name, at: stamp(), cr, bulstat };
+  if (!cr.error && !bulstat.error) await app.kv.put(key, JSON.stringify(res), { expirationTtl: 12 * 3600 });
+  return res;
+}
+
+
 export async function verifyEik(d, ctx, app) {
   const eik = str(d.eik, 20).replace(/\D/g, '');
   if (!/^(\d{9}|\d{13})$/.test(eik)) fail('value', 'Въведете ЕИК/БУЛСТАТ от 9 или 13 цифри.');
