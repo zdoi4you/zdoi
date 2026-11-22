@@ -149,3 +149,39 @@ test('регистър на институциите на МОН (ri-api): сп�
   assert.match(a.regBasis, /БУЛСТАТ/);
   assert.equal(a.email, 'info-100650@edu.mon.bg');
 });
+
+test('публични предприятия (АППК): списък по страници, подробности, адресати', async () => {
+  const { env, admin } = await ready();
+  const card = (id, name) => `<div class="p-4 rounded mb-1 bg-white shadow-sm"><div class="h6 mb-0 fw-semibold">${name}</div><div class="h6 mb-0 fw-semibold">100%</div><span>Активно</span><a href="/Public/Public/CompanyDetails/${id}">Детайли</a></div>`;
+  const page = n => (n >= 1 && n <= 3 ? Array.from({ length: 10 }, (_, i) => card((n - 1) * 10 + i + 1, 'ПРЕДПРИЯТИЕ ' + ((n - 1) * 10 + i + 1))).join('') : page(3));
+  const field = (k, v) => `<div class="text-body-secondary small mb-1">${k}</div>\n<div class="h6 mb-0">${v}</div>`;
+  env.__appk = async url => {
+    const u = new URL(url);
+    if (u.pathname.includes('Companies')) { const n = Number(u.searchParams.get('page')); return new Response(page(n === 0 ? 1 : n)); }
+    const id = u.pathname.split('/').pop();
+    return new Response([field('ЕИК/Булстат', String(200000000 + Number(id))), field('Вид', 'Търговско дружество'), field('Правна форма', 'ЕАД'),
+      field('Седалище и адрес на управление', 'БЪЛГАРИЯ, обл. Пловдив, общ. Пловдив,  гр. Пловдив,  , бл. ,  ул. Главна, ном. ' + id + ', вх. , ет. , ап.'),
+      field('Орган, упражняващ правата на държавата', 'МИНИСТЕРСТВО НА ЕНЕРГЕТИКАТА'), field('Членове на органите на управление и контрол', 'ИВАН ИВАНОВ, БЪЛГАРИЯ ПЕТЪР ПЕТРОВ, БЪЛГАРИЯ'),
+      field('Телефон:', '032/123'), field('E-mail:', 'office' + id + '@pe.bg'), field('Уеб сайт:', 'pe.bg')].join('\n'));
+  };
+  const { appkTick } = await import('../worker/src/registry.js');
+  const app = makeApp(env, env.__store, env.__kv, null);
+  const t1 = await appkTick(app, new Date('2026-11-23T09:00:00+02:00'));
+  assert.equal(t1.list, 30);
+  assert.equal(t1.ok, 15);
+  const s = await admin.call('registry.search', { source: 'appk', q: 'ПРЕДПРИЯТИЕ 7' });
+  const x = s.items.find(i => i.code === '7');
+  assert.equal(x.eik, '200000007');
+  assert.equal(x.name, 'ПРЕДПРИЯТИЕ 7 ЕАД');
+  assert.equal(x.address, 'гр. Пловдив, ул. Главна, № 7');
+  assert.equal(x.oblast, 'Пловдив');
+  assert.equal(x.parent, 'МИНИСТЕРСТВО НА ЕНЕРГЕТИКАТА');
+  assert.equal(x.director, 'ИВАН ИВАНОВ; ПЕТЪР ПЕТРОВ');
+  assert.equal(x.email, 'office7@pe.bg');
+  // добавяне на още неизтеглено предприятие – подробностите се теглят веднага
+  assert.equal((await admin.call('registry.import', { source: 'appk', keys: ['appk:29'] })).added, 1);
+  const a = (await admin.call('addressee.list')).addressees.find(z => z.eik === '200000029');
+  assert.equal(a.name, 'ПРЕДПРИЯТИЕ 29 ЕАД');
+  assert.match(a.regBasis, /БУЛСТАТ/);
+  assert.equal(a.email, 'office29@pe.bg');
+});

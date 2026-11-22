@@ -211,7 +211,123 @@ async function withRegister(app, items) {
   return [...byCode.values()].sort((a, b) => a.name.localeCompare(b.name, 'bg'));
 }
 
-/* ---------- общо за двата източника ---------- */
+/* ---------- публични предприятия (АППК, reports.appk.government.bg) ---------- */
+
+/*
+ * Електронно-информационната система за публичните предприятия на Агенцията за публичните предприятия и контрол:
+ *   /public/Public/Companies?searchType=company&page=N   – списък по 10 (наименование, държавно участие, активно)
+ *   /Public/Public/CompanyDetails/{id}                    – ЕИК/БУЛСТАТ, вид, правна форма, седалище и адрес, орган,
+ *                                                            упражняващ правата на държавата, управление, телефон, имейл, сайт
+ * Няма API – страниците се четат. Списъкът се обхожда веднъж на ден (по няколко страници на пускане), подробностите – на
+ * порции и повторно след 30 дни.
+ */
+const APPK = 'https://reports.appk.government.bg';
+const AK = { list: 'reg:appk:list', det: 'reg:appk:det', meta: 'reg:appk:meta', scan: 'reg:appk:scan' };
+
+const ent = s => String(s || '').replace(/&#x([0-9a-f]+);/gi, (m, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (m, d) => String.fromCodePoint(Number(d)))
+  .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ');
+const text = html => t(ent(String(html || '').replace(/<br\s*\/?>/gi, '; ').replace(/<[^>]+>/g, ' ')));
+
+async function appkGet(env, path) {
+  const f = env.__appk || fetch;
+  const r = await fetchRetry(f, APPK + path, { headers: { 'User-Agent': RI_UA, Accept: 'text/html' } }, 'Регистърът на публичните предприятия (reports.appk.government.bg)', env.__appk ? [] : undefined);
+  return r.text();
+}
+
+/* една страница от списъка: [{ id, name, share, active }] */
+export function parseAppkList(html) {
+  const out = [];
+  const re = /<div class="p-4 rounded mb-1 bg-white shadow-sm">([\s\S]*?)CompanyDetails\/(\d+)/g;
+  let m;
+  while ((m = re.exec(html))) {
+    const blocks = [...m[1].matchAll(/<div class="h6 mb-0 fw-semibold">([\s\S]*?)<\/div>/g)].map(x => text(x[1]));
+    out.push({ id: m[2], name: blocks[0] || '', share: blocks[1] || '', active: /Активно/.test(ent(m[1])) && !/Неактивно/.test(ent(m[1])) });
+  }
+  return out.filter(x => x.name);
+}
+
+/* подробностите на предприятието */
+export function parseAppkDetails(html) {
+  const f = {};
+  for (const m of html.matchAll(/<div class="text-body-secondary small[^"]*">([\s\S]*?)<\/div>\s*<div class="h6 mb-0[^"]*">([\s\S]*?)<\/div>/g)) {
+    const k = text(m[1]).replace(/:$/, '');
+    if (k && f[k] === undefined) f[k] = text(m[2]);
+  }
+  const addr = (f['Седалище и адрес на управление'] || '').split(',').map(x => x.trim())
+    .filter(x => x && !/^БЪЛГАРИЯ$/i.test(x) && !/^(бл|вх|ет|ап|ном)\.?$/i.test(x));
+  const oblast = (addr.find(x => /^обл\./.test(x)) || '').replace(/^обл\.\s*/, ''), muni = (addr.find(x => /^общ\./.test(x)) || '').replace(/^общ\.\s*/, '');
+  const address = addr.filter(x => !/^(обл|общ)\./.test(x)).join(', ').replace(/(^|\s)ном\.\s*/g, '$1№ ').replace(/\s+,/g, ',');
+  const b = String(f['ЕИК/Булстат'] || '').replace(/\D/g, ''), e = (f['E-mail'] || '').toLowerCase().split(/[;,\s]+/)[0] || '';
+  return {
+    eik: /^(\d{9}|\d{13})$/.test(b) ? b : '', kind: f['Вид'] || '', form: f['Правна форма'] || '', address, oblast, muni,
+    parent: f['Орган, упражняващ правата на държавата'] || '', board: (f['Членове на органите на управление и контрол'] || '').replace(/,\s*БЪЛГАРИЯ\s*/gi, '; ').replace(/[;\s]+$/, '').slice(0, 300),
+    phone: (f['Телефон'] || '').slice(0, 60), email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : '', web: f['Уеб сайт'] || ''
+  };
+}
+
+/* обхождане на списъка: до pages страници на пускане; при празна страница или повторение – списъкът е готов */
+export async function appkScan(app, pages = 6) {
+  const scan = JSON.parse((await app.kv.get(AK.scan)) || 'null') || { page: 1, items: [] }; // страниците започват от 1
+  const seen = new Set(scan.items.map(x => x.id));
+  let done = false;
+  for (let i = 0; i < pages; i++) {
+    const rows = parseAppkList(await appkGet(app.env, '/public/Public/Companies?searchType=company&page=' + scan.page));
+    const fresh = rows.filter(x => !seen.has(x.id));
+    fresh.forEach(x => { seen.add(x.id); scan.items.push(x); });
+    scan.page++;
+    if (!rows.length || !fresh.length || scan.page > 200) { done = true; break; }
+  }
+  if (!done) { await app.kv.put(AK.scan, JSON.stringify(scan), { expirationTtl: 2 * 86400 }); return { scanning: scan.page, found: scan.items.length }; }
+  if (scan.items.length < 20) fail('external', 'Регистърът на публичните предприятия върна твърде малко записи (' + scan.items.length + ').');
+  await app.kv.put(AK.list, JSON.stringify(scan.items));
+  await app.kv.delete(AK.scan);
+  const meta = JSON.parse((await app.kv.get(AK.meta)) || '{}');
+  await app.kv.put(AK.meta, JSON.stringify(Object.assign(meta, { listAt: stamp(), count: scan.items.length })));
+  return { list: scan.items.length };
+}
+
+export async function appkDetailsBatch(app, n = 15, ids = null) {
+  const list = JSON.parse((await app.kv.get(AK.list)) || '[]');
+  if (!list.length) return { skipped: 'няма списък' };
+  const det = JSON.parse((await app.kv.get(AK.det)) || '{}');
+  const now = Date.now(), stale = x => !det[x.id] || now - det[x.id].ts > RI_STALE;
+  const todo = (ids ? list.filter(x => ids.includes(x.id) && stale(x)) : list.filter(stale)).slice(0, n);
+  let ok = 0, errors = 0;
+  for (const x of todo) {
+    try { det[x.id] = Object.assign(parseAppkDetails(await appkGet(app.env, '/Public/Public/CompanyDetails/' + x.id)), { ts: now }); ok++; } catch (e) { errors++; if (errors >= 3) break; }
+  }
+  if (ok) await app.kv.put(AK.det, JSON.stringify(det));
+  const left = list.filter(stale).length;
+  const meta = JSON.parse((await app.kv.get(AK.meta)) || '{}');
+  await app.kv.put(AK.meta, JSON.stringify(Object.assign(meta, { detAt: stamp(), withDetails: Object.keys(det).length, left })));
+  return { ok, errors, left };
+}
+
+/* Cron: списъкът – обхождане веднъж на ден; подробностите – по 15 на пускане */
+export async function appkTick(app, now = new Date()) {
+  const key = 'reg:appk:checked:' + todayIso(now), out = {};
+  const scanning = !!(await app.kv.get(AK.scan));
+  if (scanning || !(await app.kv.get(key)) || !(await app.kv.get(AK.list))) {
+    try { Object.assign(out, await appkScan(app)); if (out.list) await app.kv.put(key, '1', { expirationTtl: 2 * 86400 }); } catch (e) { out.listError = e.message; }
+    if (out.scanning) return out; // подробностите – след като списъкът е готов
+  }
+  try { Object.assign(out, await appkDetailsBatch(app)); } catch (e) { out.detError = e.message; }
+  return out;
+}
+
+async function loadAppk(app) {
+  const [list, det] = await Promise.all([AK.list, AK.det].map(async k => JSON.parse((await app.kv.get(k)) || 'null')));
+  if (!list || !list.length) fail('external', 'Регистърът на публичните предприятия още се зарежда – опитайте след няколко минути.');
+  const d = det || {};
+  return list.map(x => {
+    const e = d[x.id] || {};
+    const name = x.name + (e.form && !x.name.toUpperCase().endsWith(' ' + e.form.toUpperCase()) ? ' ' + e.form : '');
+    return { key: 'appk:' + x.id, code: x.id, name, kind: e.kind || 'Публично предприятие', parent: e.parent || '', share: x.share, status: x.active ? 'активно' : 'неактивно',
+      eik: e.eik || '', address: e.address || '', oblast: e.oblast || '', muni: e.muni || '', phone: e.phone || '', email: e.email || '', web: e.web || '', director: e.board || '' };
+  }).sort((a, b) => a.name.localeCompare(b.name, 'bg'));
+}
+
+/* ---------- общо за източниците ---------- */
 
 const SOURCES = {
   iisda: { dataset: DATASET, key: KEY, meta: META, map: mapRows, min: 50, label: 'регистъра на административните структури' },
@@ -238,6 +354,7 @@ export async function refreshRegistry(app, force, source = 'iisda') {
 
 /* училищата – с добавените от ri.mon.bg БУЛСТАТ, имейл и телефон */
 async function loadRegistry(app, source = 'iisda') {
+  if (source === 'appk') return loadAppk(app);
   const S = src(source);
   let raw = await app.kv.get(S.key);
   if (!raw) {
@@ -271,7 +388,7 @@ export async function registryDaily(app, now = new Date()) {
 const low = s => String(s || '').toLowerCase().replace(/[„“"']/g, '');
 
 export async function registrySearch(d, ctx, app) {
-  const source = d.source === 'mon' ? 'mon' : 'iisda';
+  const source = ['mon', 'appk'].includes(d.source) ? d.source : 'iisda';
   const all = await loadRegistry(app, source);
   const q = low(line(d.q, 120)).trim(), kind = line(d.kind, 120), oblast = line(d.oblast, 80);
   const words = q.split(/\s+/).filter(Boolean);
@@ -283,15 +400,21 @@ export async function registrySearch(d, ctx, app) {
   const limit = Math.min(Math.max(Number(d.limit) || 50, 1), 700);
   return {
     source, items: items.slice(0, limit), total: items.length, all: all.length,
-    withEik: source === 'mon' ? all.filter(x => x.eik).length : undefined,
+    withEik: source !== 'iisda' ? all.filter(x => x.eik).length : undefined,
     kinds: d.facets ? [...new Set(all.map(x => x.kind))].sort((a, b) => a.localeCompare(b, 'bg')) : undefined,
     oblasts: d.facets ? [...new Set(all.map(x => x.oblast).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'bg')) : undefined,
-    meta: JSON.parse((await app.kv.get(src(source).meta)) || 'null'),
-    ri: source === 'mon' ? JSON.parse((await app.kv.get(RIK.meta)) || 'null') : undefined
+    meta: source === 'appk' ? { source: APPK } : JSON.parse((await app.kv.get(src(source).meta)) || 'null'),
+    ri: source === 'mon' ? JSON.parse((await app.kv.get(RIK.meta)) || 'null') : source === 'appk' ? JSON.parse((await app.kv.get(AK.meta)) || 'null') : undefined
   };
 }
 
 export async function registryRefresh(d, ctx, app) {
+  if (d.source === 'appk') {
+    const r = await appkScan(app, 32);
+    if (r.list) Object.assign(r, await appkDetailsBatch(app, 10));
+    await audit(app, ctx.username, 'Обновен регистър на публичните предприятия', '', JSON.stringify(r));
+    return Object.assign({ name: 'Публични предприятия (АППК)', count: r.list || r.found || 0 }, r);
+  }
   const source = d.source === 'mon' ? 'mon' : 'iisda';
   const r = await refreshRegistry(app, true, source);
   if (source === 'mon') {
@@ -332,18 +455,19 @@ export async function registryMonImport(d, ctx, app) {
 
 /* копира избраните в „Адресати“ на лицето (структурите – по ЕИК/БУЛСТАТ, училищата – по код по НЕИСПУО); до 40 на заявка */
 export async function registryImport(d, ctx, app) {
-  const source = d.source === 'mon' ? 'mon' : 'iisda';
+  const source = ['mon', 'appk'].includes(d.source) ? d.source : 'iisda';
   const keys = (Array.isArray(d.keys) ? d.keys : Array.isArray(d.eiks) ? d.eiks : []).map(x => str(x, 20)).filter(Boolean).slice(0, 40);
   if (!keys.length) fail('required', 'Изберете поне една институция.');
   const code = await addresseeScope(app, ctx, d.person), map = await addresseePersons(app);
   if (source === 'mon') { try { await riDetailsBatch(app, 40, keys.map(k => k.replace(/\D/g, ''))); } catch (_) { /* без регистъра – с наличните данни */ } }
+  if (source === 'appk') { try { await appkDetailsBatch(app, 40, keys.map(k => k.replace(/\D/g, ''))); } catch (_) { /* с наличните данни */ } }
   const all = await loadRegistry(app, source);
   // само адресатите на това лице – всяко лице има свой списък
   const rows = (await app.store.list('addressees')).filter(a => (map[a._id] || DEFAULT_CODE) === code);
   const owned = {};
   let added = 0, updated = 0;
   for (const k of keys) {
-    const x = source === 'mon' ? all.find(y => y.key === k || y.code === k.replace(/\D/g, '')) : all.find(y => y.eik === k.replace(/\D/g, ''));
+    const x = source !== 'iisda' ? all.find(y => y.key === k || y.code === k.replace(/\D/g, '')) : all.find(y => y.eik === k.replace(/\D/g, ''));
     if (!x) continue;
     const v = { type: 'Задължен субект (орган или организация)', name: x.name.slice(0, 200), regBasis: REG_BASIS[2], eik: x.eik, seat: x.muni || '', address: x.address.slice(0, 400),
       oblast: x.oblast, email: x.email, phone: (x.phone || '').slice(0, 40) };
@@ -360,6 +484,6 @@ export async function registryImport(d, ctx, app) {
     }
   }
   if (Object.keys(owned).length && code !== DEFAULT_CODE) await setAddresseePersons(app, owned);
-  if (added || updated) await audit(app, ctx.username, 'Адресати от ' + src(source).label, '', 'добавени ' + added + ', обновени ' + updated);
+  if (added || updated) await audit(app, ctx.username, 'Адресати от ' + (source === 'appk' ? 'регистъра на публичните предприятия' : src(source).label), '', 'добавени ' + added + ', обновени ' + updated);
   return { added, updated };
 }

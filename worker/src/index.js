@@ -287,6 +287,8 @@ export default {
       .then(() => registry.registryDaily(app)).then(r => { if (r.updated) console.log('регистър', JSON.stringify(r)); }, e => console.error('регистър: ' + e.message))
       // регистърът на институциите на МОН: списъкът веднъж на ден, подробностите (БУЛСТАТ, имейл) – по 25 на пускане
       .then(() => registry.riTick(app)).then(r => { if (r.ok || r.list || r.listError || r.detError) console.log('МОН', JSON.stringify(r)); }, e => console.error('МОН: ' + e.message))
+      // публичните предприятия (АППК): списъкът веднъж на ден, подробностите – по 15 на пускане
+      .then(() => registry.appkTick(app)).then(r => { if (r.ok || r.list || r.listError || r.detError) console.log('АППК', JSON.stringify(r)); }, e => console.error('АППК: ' + e.message))
       .then(() => acme.ensureCert(app)).then(r => console.log('сертификат за КЕП', JSON.stringify(r))));
   }
 };
