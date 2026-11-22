@@ -3255,6 +3255,49 @@ function mdRender(src) {
   return h('div', { class: 'md' }, out);
 }
 
+/*
+ * Защита на ръководството: текстът не се маркира и копира, печатът (и „Печат в PDF“) показва празна страница,
+ * клавишите за печат, запис, копиране и PrintScreen се спират, а при излизане от прозореца (инструменти за снимка
+ * на екрана) съдържанието се размазва. Върху текста има воден знак с потребителя и часа. Браузърът не може да
+ * спре напълно снимка с външна програма или телефон – водният знак показва чия е.
+ */
+const GUARD_MSG = 'Ръководството е само за преглед в системата: копиране, печат и снимки на екрана не са разрешени.';
+function guard(on) {
+  document.body.classList.toggle('guard', !!on);
+  if (!on) document.body.classList.remove('shield');
+}
+const guarded = () => document.body.classList.contains('guard');
+const shield = on => { if (guarded()) document.body.classList.toggle('shield', on); };
+document.addEventListener('keydown', e => {
+  if (!guarded()) return;
+  const k = (e.key || '').toLowerCase();
+  if (k === 'printscreen' || ((e.ctrlKey || e.metaKey) && ['p', 's', 'c', 'x', 'a', 'u'].includes(k) && !e.target.closest('input, textarea, select')) || ((e.ctrlKey || e.metaKey) && e.shiftKey && ['s', 'i', 'c'].includes(k))) {
+    e.preventDefault(); e.stopPropagation();
+    if (k === 'printscreen') { shield(true); setTimeout(() => shield(false), 1500); }
+    toast(GUARD_MSG);
+  }
+}, true);
+document.addEventListener('keyup', e => {
+  if (guarded() && (e.key || '').toLowerCase() === 'printscreen') {
+    try { navigator.clipboard.writeText(GUARD_MSG).catch(() => {}); } catch (_) { /* без достъп до клипборда */ }
+    toast(GUARD_MSG);
+  }
+}, true);
+['copy', 'cut', 'contextmenu', 'dragstart', 'selectstart'].forEach(ev => document.addEventListener(ev, e => {
+  if (guarded() && e.target.closest && e.target.closest('.protected')) { e.preventDefault(); if (ev !== 'selectstart') toast(GUARD_MSG); }
+}, true));
+window.addEventListener('beforeprint', () => { if (guarded()) toast(GUARD_MSG); });
+window.addEventListener('blur', () => shield(true));
+window.addEventListener('focus', () => setTimeout(() => shield(false), 300));
+document.addEventListener('visibilitychange', () => shield(document.hidden));
+/* воден знак: потребител и време, повторен по диагонал */
+function watermark() {
+  const t = (me.name || me.username) + ' · ' + me.username + ' · ' + fmtTime(new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Sofia' }).replace(' ', 'T'));
+  const esc = t.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="420" height="220"><text x="20" y="130" transform="rotate(-24 210 110)" font-family="sans-serif" font-size="15" fill="#7a8699" fill-opacity=".16">' + esc + '</text></svg>';
+  return h('div', { class: 'wm', 'aria-hidden': 'true', style: 'background-image:url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")' });
+}
+
 async function helpView(query) {
   loading();
   const q = new URLSearchParams(query || '');
@@ -3311,7 +3354,8 @@ async function helpView(query) {
       h('button', { class: 'btn', onclick: () => ticketDialog() }, 'Подай сигнал')),
       h('p', { class: 'small muted mb-12' }, 'Как се работи със системата – показват се разделите за вашата роля (' + me.role + ') и права. Ръководството се пази в базата и се вижда само след вход. Не намирате отговор? „Подай сигнал“ отваря тикет към администраторите.'),
       h('div', { class: 'filters mb-12' }, find),
-      h('div', { class: 'help-layout' }, toc, body));
+      h('div', { class: 'help-layout protected' }, toc, body, watermark()));
+    guard(true);
     draw();
   } catch (e) { failView(e); }
 }
@@ -3326,18 +3370,54 @@ async function ticketMeta() {
   return ticketLists;
 }
 
-/* нов тикет – от всяка страница; страницата, от която е отворен, се записва */
+/* имената на страниците – за тикетите („от коя страница“) */
+const PAGE_NAMES = {
+  dashboard: 'Табло', requests: 'Заявления', request: 'Заявление', cases: 'Входящ регистър', case: 'Входяща преписка', mail: 'Поща',
+  calendar: 'Календар', courts: 'Съдебни дела', court: 'Съдебно дело', register: 'Изходящ регистър', addressees: 'Адресати',
+  verify: 'Проверки в регистрите', calc: 'Калкулатор на срокове', kep: 'Проверка на КЕП', departments: 'Отдели', users: 'Потребители и права',
+  persons: 'Лица и достъп', system: 'Система', logins: 'Входове и сесии', log: 'Дневник', profile: 'Моят профил', help: 'Ръководство', tickets: 'Тикети', ticket: 'Тикет'
+};
+function pageLabel(hash) {
+  const [path, query] = String(hash || '').replace(/^#/, '').split('?');
+  const parts = path.split('/').filter(Boolean).map(x => { try { return decodeURIComponent(x); } catch (_) { return x; } });
+  const name = PAGE_NAMES[parts[0] || 'dashboard'] || parts[0] || 'Табло';
+  const id = parts[1] && parts[1] !== '*' ? ' ' + (parts[1] === 'new' ? '(ново)' : parts[1]) : '';
+  const q = new URLSearchParams(query || '');
+  const extra = q.get('eik') ? ' – ЕИК ' + q.get('eik') : q.get('name') ? ' – „' + q.get('name') + '“' : '';
+  return name + id + (parts[2] === 'edit' ? ' (редакция)' : '') + extra;
+}
+/* записаната страница на тикета: „Име · #/адрес“ (или стар запис – само адрес) */
+const ticketPageView = v => {
+  const m = /(#\/\S*)$/.exec(String(v || ''));
+  if (!m) return v;
+  const label = String(v).slice(0, m.index).replace(/\s*·\s*$/, '') || pageLabel(m[1]);
+  return h('a', { href: m[1] }, label);
+};
+/* последната работна страница (не ръководство и тикети) – по подразбиране за „от коя страница“ */
+let lastWorkPage = '';
+
+/* нов тикет – от всяка страница; страницата се избира (по подразбиране – тази, от която е отворен) */
 async function ticketDialog(preset = {}) {
   let L;
   try { L = await ticketMeta(); } catch (e) { return toast(e.message); }
-  const page = preset.page !== undefined ? preset.page : /^#\/(help|tickets?)/.test(location.hash) ? '' : location.hash;
+  const here = /^#\/(help|tickets?)(\/|\?|$)/.test(location.hash) ? lastWorkPage : location.hash || '#/dashboard';
+  const seen = new Set();
+  const opts = [];
+  const add = (hash, text) => { if (hash && !seen.has(hash)) { seen.add(hash); opts.push([hash, text]); } };
+  if (here) add(here, 'Тази страница: ' + pageLabel(here));
+  NAV().forEach(([, items]) => items.forEach(([href, text]) => add(href, text)));
+  NAV_FOOT.forEach(([href, text]) => add(href, text));
+  add('#/profile', 'Моят профил');
+  opts.push(['', '— не е свързано с конкретна страница —']);
+  const page = preset.page !== undefined ? preset.page : here;
   formDialog('Нов тикет', [
     { k: 'category', label: 'Категория', type: 'select', req: true, options: L.categories },
     { k: 'priority', label: 'Приоритет', type: 'select', options: L.priorities },
     { k: 'title', label: 'Кратко заглавие', req: true, max: 200, full: true, placeholder: 'напр. Не се зарежда регистърът на училищата' },
     { k: 'body', label: 'Описание', type: 'textarea', req: true, rows: 8, max: 20000, full: true, hint: 'Какво направихте, какво очаквахте и какво стана (точния текст на грешката). Без ЕГН и пароли.' },
-    { k: 'page', label: 'Страница', max: 250, full: true, hint: 'Попълва се сама – страницата, от която подавате сигнала.' }
+    { k: 'page', label: 'От коя страница е проблемът', type: 'select', options: opts, full: true, hint: 'По подразбиране – страницата, от която отворихте сигнала (с номера на преписката, ако има). Сменете я, ако проблемът е другаде.' }
   ], { category: preset.category || L.categories[0], priority: 'Нормален', page }, 'Подай', async v => {
+    v.page = v.page ? pageLabel(v.page) + ' · ' + v.page : '';
     const r = await api('ticket.create', v);
     toast('Тикет ' + r.no + ' е подаден.'); countsAt = 0;
     location.hash = '#/ticket/' + encodeURIComponent(r.no);
@@ -3363,8 +3443,9 @@ async function ticketsView(query) {
       const n = find.value.trim().toLowerCase();
       const rows = r.tickets.filter(t => (st.value === 'open' ? open.includes(t.status) : !st.value || t.status === st.value) && (!cat.value || t.category === cat.value)
         && (!n || [t.no, t.title, userName(t.createdBy), t.createdBy].join(' ').toLowerCase().includes(n)));
-      box.replaceChildren(table(['№', 'Заглавие', 'Категория', 'Приоритет', 'Статус', all ? 'Подал' : null, 'Отговорник', 'Последна промяна'].filter(Boolean), rows.map(t => h('tr', { class: 'clickable', onclick: () => { location.hash = '#/ticket/' + encodeURIComponent(t.no); } },
-        h('td', null, h('a', { href: '#/ticket/' + encodeURIComponent(t.no) }, t.no)), h('td', null, t.title), h('td', null, t.category),
+      box.replaceChildren(table(['№', 'Заглавие', 'Страница', 'Категория', 'Приоритет', 'Статус', all ? 'Подал' : null, 'Отговорник', 'Последна промяна'].filter(Boolean), rows.map(t => h('tr', { class: 'clickable', onclick: () => { location.hash = '#/ticket/' + encodeURIComponent(t.no); } },
+        h('td', null, h('a', { href: '#/ticket/' + encodeURIComponent(t.no) }, t.no)), h('td', null, t.title),
+        h('td', { class: 'small', onclick: e => e.stopPropagation() }, t.page ? ticketPageView(t.page) : '—'), h('td', null, t.category),
         h('td', null, h('span', { class: 'pill ' + (PRIO_PILL[t.priority] || '') }, t.priority)), h('td', null, h('span', { class: 'pill ' + (TICKET_PILL[t.status] || '') }, t.status)),
         all ? h('td', null, userName(t.createdBy)) : null, h('td', null, t.assignee ? userName(t.assignee) : '—'), h('td', null, fmtTime(t.updatedAt)))),
         r.tickets.length ? 'Няма тикети по този филтър.' : 'Още няма тикети. „Нов тикет“ – при проблем, въпрос или заявка.'));
@@ -3373,7 +3454,7 @@ async function ticketsView(query) {
     find.addEventListener('input', draw);
     const tabs = r.handler ? h('div', { class: 'seg mb-12' }, [['', 'Всички тикети'], ['1', 'Моите']].map(([k, label]) =>
       h('button', { class: 'btn sm' + ((mine ? '1' : '') === k ? ' primary' : ''), onclick: () => { location.hash = '#/tickets' + (k ? '?mine=1' : ''); } }, label))) : null;
-    setView(head('Тикети', h('a', { class: 'btn', href: '#/help' }, 'Ръководство'), h('button', { class: 'btn primary', onclick: () => ticketDialog({ page: '' }) }, 'Нов тикет')),
+    setView(head('Тикети', h('a', { class: 'btn', href: '#/help' }, 'Ръководство'), h('button', { class: 'btn primary', onclick: () => ticketDialog() }, 'Нов тикет')),
       tabs,
       h('p', { class: 'small muted mb-12' }, all ? 'Всички подадени тикети. Новите се отбелязват в менюто; подателят получава имейл при отговор и при смяна на статуса.' : 'Вашите сигнали за проблеми, въпроси и заявки (вкл. отворени данни и регистри). Получавате имейл при отговор.'),
       h('div', { class: 'filters mb-12' }, find, st, cat), box);
@@ -3415,7 +3496,7 @@ async function ticketPage(no) {
         h('div', { class: 'stack' },
           h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Описание'), h('span', { class: 'pill ' + (TICKET_PILL[t.status] || '') }, t.status)),
             h('div', { class: 'pre' }, t.body),
-            t.page ? h('p', { class: 'small muted' }, 'Страница: ', /^#\//.test(t.page) ? h('a', { href: t.page }, t.page) : t.page) : null),
+            t.page ? h('p', { class: 'small muted' }, 'От страница: ', ticketPageView(t.page)) : null),
           h('section', { class: 'card stack' }, h('h2', null, 'Разговор'), msgs.length ? h('div', { class: 'stack' }, msgs) : h('p', { class: 'empty' }, 'Още няма отговори.'),
             t.status === 'Затворен' && !r.handler ? h('p', { class: 'small muted' }, 'Тикетът е затворен. Ново съобщение ще го отвори отново.') : null,
             text, h('div', { class: 'actions' }, internal ? h('label', { class: 'check' }, internal, h('span', null, 'Вътрешна бележка (подателят не я вижда)')) : null, nextSt,
@@ -3434,6 +3515,8 @@ async function route() {
   const [path, query] = raw.split('?');
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
   const page = parts[0] || 'dashboard';
+  guard(false);
+  if (me && !['help', 'tickets', 'ticket', 'login', 'activate', 'forgot', 'code'].includes(page)) lastWorkPage = '#' + raw;
   if (!me) {
     if (page === 'activate') return activateView(parts[1] || '', parts[2] || '');
     if (page === 'forgot') return forgotView();

@@ -502,3 +502,13 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--gray
   body.nav-rail .clock b { font-size: 13px; }
 }
 @media (max-width: 1000px) { .side-rail { display: none; } }
+/* защита на ръководството: без маркиране, печат и снимки (размазване при излизане от прозореца); воден знак */
+.protected { position: relative; }
+body.guard .protected { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+body.guard .protected .wm { position: absolute; inset: 0; pointer-events: none; z-index: 2; background-repeat: repeat; }
+body.guard.shield .protected { filter: blur(16px); }
+body.guard.shield #view::before { content: "Скрито – върнете се в прозореца"; position: fixed; top: 45%; left: 50%; transform: translateX(-50%); z-index: 20; padding: 10px 16px; border-radius: 10px; background: var(--card); color: var(--ink); font-weight: 600; }
+@media print {
+  body.guard #app, body.guard dialog, body.guard .nav-fly { display: none !important; }
+  body.guard::before { content: "Печатът на ръководството не е разрешен. Ръководството е само за преглед в системата."; display: block; padding: 48px; font: 16px sans-serif; }
+}
