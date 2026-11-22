@@ -8,7 +8,7 @@ import { ROLE_SUPER } from './config.js';
 import { fail, line, stamp, oneOf, isEmail, validEik, view } from './util.js';
 import { audit, cached, dropCache, setting, setSetting } from './core.js';
 import { accessOf, dropUser } from './auth.js';
-import { mailboxAddress } from './mailbox.js';
+import { mailboxAddress, fromB64 } from './mailbox.js';
 
 export const REG_BASIS = ['', 'ЕИК по Търговския закон (Търговски регистър)', 'Код по БУЛСТАТ (Закон за регистър БУЛСТАТ)'];
 export const DEFAULT_CODE = 'zdoi';
@@ -46,7 +46,8 @@ async function seedPerson(app) {
 const personView = r => {
   const o = view(r);
   PROFILE_KEYS.forEach(k => { if (o[k] === undefined || o[k] === null) o[k] = ''; });
-  return Object.assign(o, { isDefault: r.isDefault === 'Да', active: r.active !== 'Не', tagId: r.tagId || '' });
+  // logo: версия на логото на лицето (празно – само логото на ЗДОИ4You)
+  return Object.assign(o, { isDefault: r.isDefault === 'Да', active: r.active !== 'Не', tagId: r.tagId || '', logo: r.logo ? r.logo.split('|')[2] || '1' : '' });
 };
 
 export async function allPersons(app) {
@@ -70,6 +71,7 @@ export async function allPersons(app) {
       if (!TAG_RE.test(t) || taken.has(t)) { t = newTagId(taken); await setSetting(app, 'ptag:' + r.code, t); }
       taken.add(t);
       r.tagId = t;
+      r.logo = await setting(app, LOGO_KEY + r.code, '');
     }
     return rows.sort((a, b) => (b.isDefault === 'Да') - (a.isDefault === 'Да') || Number(a._id) - Number(b._id)).map(personView);
   });
@@ -88,6 +90,7 @@ export async function orgProfile(app) {
   const p = await defaultPerson(app);
   const o = {};
   PROFILE_KEYS.forEach(k => { o[k] = p[k] || ''; });
+  o.code = p.code; o.isDefault = true; o.logo = p.logo || '';
   return o;
 }
 
@@ -193,6 +196,59 @@ export async function addresseeScope(app, ctx, code) {
   const codes = await allowedCodes(app, ctx), c = line(code, 10) || DEFAULT_CODE;
   if (!codes.includes(c)) fail('role', 'Нямате достъп до адресатите на това лице.');
   return c;
+}
+
+/*
+ * Лого на лицето – по желание, излиза в бланката до логото на ЗДОИ4You. Файлът е в „Документи/ADM/Лица/<код>“,
+ * а в настройката „plogo:<код>“ се пази „id на файла|тип|версия“. Кешира се в KV.
+ */
+const LOGO_KEY = 'plogo:';
+const LOGO_TYPES = ['image/png', 'image/jpeg'];
+const LOGO_MAX = 400 * 1024;
+const toB64 = bytes => { let s = ''; const a = new Uint8Array(bytes); for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
+
+async function logoPerson(app, ctx, code) {
+  const p = (await allPersons(app)).find(x => x.code === line(code, 10));
+  if (!p) fail('notfound', 'Лицето не е намерено.');
+  if (!(await allowedCodes(app, ctx)).includes(p.code)) fail('role', 'Нямате достъп до това лице.');
+  return p;
+}
+
+export async function personLogo(d, ctx, app) {
+  const p = await logoPerson(app, ctx, d.person);
+  const raw = await setting(app, LOGO_KEY + p.code, '');
+  if (!raw) return { logo: null };
+  const [id, type, ver] = raw.split('|');
+  const key = 'c:plogo:' + p.code + ':' + ver;
+  let data = await app.kv.get(key);
+  if (!data) {
+    data = toB64(await app.store.downloadFile(id));
+    await app.kv.put(key, data, { expirationTtl: 30 * 86400 });
+  }
+  return { logo: { type, data, ver } };
+}
+
+export async function personLogoSave(d, ctx, app) {
+  const p = await logoPerson(app, ctx, d.person);
+  if (d.remove === true) {
+    await setSetting(app, LOGO_KEY + p.code, '');
+    await dropCache(app, 'persons');
+    await audit(app, ctx.username, 'Премахнато лого на лице', p.code, '');
+    return { logo: '' };
+  }
+  const type = String(d.type || '');
+  if (!LOGO_TYPES.includes(type)) fail('value', 'Логото трябва да е PNG или JPEG.');
+  const bytes = fromB64(String(d.data || ''));
+  if (!bytes.length) fail('required', 'Изберете файл.');
+  if (bytes.length > LOGO_MAX) fail('size', 'Логото е твърде голямо (до 400 KB).');
+  const sig = type === 'image/png' ? [0x89, 0x50, 0x4e, 0x47] : [0xff, 0xd8, 0xff];
+  if (!sig.every((b, i) => bytes[i] === b)) fail('value', 'Файлът не е ' + (type === 'image/png' ? 'PNG' : 'JPEG') + ' изображение.');
+  const ver = Date.now().toString(36);
+  const f = await app.store.uploadFile('Лица/' + p.code + '/лого-' + ver + (type === 'image/png' ? '.png' : '.jpg'), bytes, type);
+  await setSetting(app, LOGO_KEY + p.code, f.id + '|' + type + '|' + ver);
+  await dropCache(app, 'persons');
+  await audit(app, ctx.username, 'Ново лого на лице', p.code, Math.round(bytes.length / 1024) + ' KB');
+  return { logo: ver };
 }
 
 /* профилът на Сдружението от „Система“ (администратор) */

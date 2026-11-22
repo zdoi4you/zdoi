@@ -6,6 +6,12 @@ import { addressPicker } from './address.js';
 import * as Kep from './kep.js';
 
 const API = '/api';
+const logoCache = {};
+Docs.setLogoLoader(async (code, ver) => {
+  const k = code + ':' + ver;
+  if (!logoCache[k]) logoCache[k] = api('person.logo', { person: code }).then(r => (r.logo ? 'data:' + r.logo.type + ';base64,' + r.logo.data : null)).catch(() => { delete logoCache[k]; return null; });
+  return logoCache[k];
+});
 const SESSION_MIN = 30; // по подразбиране; всеки избира в „Моят профил“ (до 3 часа)
 const sessionMin = () => (me && me.sessionMin) || SESSION_MIN;
 const ROLE_HINT = {
@@ -2759,6 +2765,30 @@ async function systemView() {
     { k: 'place', label: 'Място по подразбиране', max: 80 }
   ];
   const orgForm = h('form', null, h('div', { class: 'form-grid' }, orgFields.map(f => field(f, o[f.k]))), h('button', { type: 'submit', class: 'btn primary mt-12' }, 'Запази профила'));
+  // лого на лицето – по желание, до логото на ЗДОИ4You в бланката
+  const logoBox = h('div', { class: 'logo-box' });
+  const drawLogo = async () => {
+    const ver = pn.logo;
+    let img = null;
+    if (ver) { try { const r = await api('person.logo', { person: pn.code }); if (r.logo) img = h('img', { src: 'data:' + r.logo.type + ';base64,' + r.logo.data, alt: 'Лого на ' + who }); } catch (_) { img = null; } }
+    const file = h('input', { type: 'file', accept: 'image/png,image/jpeg', hidden: true, onchange: async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!['image/png', 'image/jpeg'].includes(f.type)) return toast('Изберете PNG или JPEG.');
+      if (f.size > 400 * 1024) return toast('Логото е твърде голямо (до 400 KB).');
+      try {
+        const data = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => bad(new Error('Файлът не може да се прочете.')); r.readAsDataURL(f); });
+        const r = await api('person.logo.save', { person: pn.code, type: f.type, data });
+        pn.logo = r.logo; boot = await api('bootstrap'); toast('Логото е качено.'); drawLogo();
+      } catch (ex) { toast(ex.message); }
+    } });
+    logoBox.replaceChildren(
+      h('div', { class: 'logo-row' }, h('span', { class: 'logo-plate' }, h('img', { src: 'assets/logo-site.png', alt: 'ЗДОИ4You' })), img ? h('span', { class: 'logo-plate own' }, img) : h('span', { class: 'logo-empty small muted' }, 'без лого на лицето')),
+      h('div', { class: 'actions' }, file, h('button', { type: 'button', class: 'btn sm', onclick: () => file.click() }, img ? 'Смени логото' : 'Качи лого на лицето'),
+        img ? h('button', { type: 'button', class: 'btn sm danger', onclick: async () => { if (!confirm('Да се премахне ли логото на ' + who + '?')) return; try { await api('person.logo.save', { person: pn.code, remove: true }); pn.logo = ''; boot = await api('bootstrap'); toast('Логото е премахнато.'); drawLogo(); } catch (ex) { toast(ex.message); } } }, 'Премахни') : null),
+      h('p', { class: 'small muted' }, 'PNG или JPEG до 400 KB, за предпочитане с прозрачен фон. Излиза в бланката до логото на ЗДОИ4You.'));
+  };
+  drawLogo();
   onSubmit(orgForm, async v => { await api('system.save', { org: v, person: pn.code }); boot = await api('bootstrap'); toast('Профилът на ' + v.name + ' е запазен.'); });
   const run = s.mailLastRun || {};
   const poll = h('input', { type: 'checkbox', checked: s.mailPoll });
@@ -2766,7 +2796,7 @@ async function systemView() {
   setView(head('Системни настройки', manyPersons() ? h('span', { class: 'pill info' }, who) : null),
     manyPersons() ? h('p', { class: 'small muted mb-12' }, 'Настройките на ', h('b', null, who), ' – бланка, поща и номерация. Смяна на лицето – от горната лента. Входът, КЕП и базата данни са общи за системата.') : null,
     h('div', { class: 'grid2' },
-    h('section', { class: 'card stack' }, h('h2', null, who + ' – заявител и бланка'), h('p', { class: 'small muted' }, pn.isDefault === false ? 'Данните излизат в бланката на документите на ' + who + ' (без логото на ЗДОИ4You) и като заявител в неговите заявления.' : 'Данните излизат в бланката на документите (с логото на ЗДОИ4You и ' + (o.web || 'my.zdoi4you.eu') + ') и като заявител, когато заявлението е от името на Сдружението.'), orgForm),
+    h('section', { class: 'card stack' }, h('h2', null, who + ' – заявител и бланка'), logoBox, h('p', { class: 'small muted' }, pn.isDefault === false ? 'Данните излизат в бланката на документите на ' + who + ' (с логото на ЗДОИ4You и my.zdoi4you.eu, както при Сдружението) и като заявител в неговите заявления.' : 'Данните излизат в бланката на документите (с логото на ЗДОИ4You и ' + (o.web || 'my.zdoi4you.eu') + ') и като заявител, когато заявлението е от името на Сдружението.'), orgForm),
     h('div', { class: 'stack' },
       h('section', { class: 'card stack' }, h('h2', null, 'Поща на ' + who), kv([
         ['Кутия', s.mailbox + (s.sharedBox && !pn.isDefault ? ' (общата кутия – отговорите се разпознават по етикета на лицето)' : '')], ['Адрес за отговор (пример)', s.sampleReplyTo], ['Последна проверка', run.at ? fmtTime(run.at) : '—'],

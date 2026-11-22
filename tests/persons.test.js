@@ -188,3 +188,21 @@ test('адресатите и системните настройки са от�
   assert.ok(!run.boxes.some(b => b.box === 'abc@zdoi.eu'));
   assert.ok(run.boxes.some(b => b.box === 'priemna@zdoi.eu'));
 });
+
+test('лого на лицето: качване (PNG/JPEG до 400 KB), четене, премахване; само с достъп и право', async () => {
+  const { env, outbox, admin } = await world();
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(100, 1)]).toString('base64');
+  assert.equal((await admin.call('person.logo.save', { person: 'abc', type: 'image/png', data: Buffer.from('not png').toString('base64') })).error, 'value');
+  assert.equal((await admin.call('person.logo.save', { person: 'abc', type: 'image/gif', data: png })).error, 'value');
+  const r = await admin.call('person.logo.save', { person: 'abc', type: 'image/png', data: png });
+  assert.ok(r.logo);
+  const g = await admin.call('person.logo', { person: 'abc' });
+  assert.equal(g.logo.type, 'image/png');
+  assert.equal(g.logo.data, png);
+  assert.equal((await admin.call('bootstrap')).persons.find(p => p.code === 'abc').logo, r.logo);
+  const ivan = await addUser(env, outbox, admin, 'ivan', 'Служител');
+  assert.equal((await ivan.call('person.logo', { person: 'abc' })).error, 'role');
+  assert.equal((await ivan.call('person.logo.save', { person: 'zdoi', type: 'image/png', data: png })).error, 'role');
+  await admin.call('person.logo.save', { person: 'abc', remove: true });
+  assert.equal((await admin.call('person.logo', { person: 'abc' })).logo, null);
+});

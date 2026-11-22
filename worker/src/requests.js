@@ -700,7 +700,7 @@ export async function systemGet(d, ctx, app) {
   const box = boxOf(app, p), last = safeJson(await setting(app, 'mailLastRun', '{}'));
   const boxRun = (last.boxes || []).find(x => x.box === box);
   return {
-    person: { code: p.code, name: p.name, isDefault: !!p.isDefault, active: p.active, outPrefix: p.outPrefix, mailbox: p.mailbox || '', tagId: p.tagId },
+    person: { code: p.code, name: p.name, isDefault: !!p.isDefault, active: p.active, logo: p.logo || '', outPrefix: p.outPrefix, mailbox: p.mailbox || '', tagId: p.tagId },
     org: p.isDefault ? await orgProfile(app) : Object.fromEntries(['name', 'brand', 'regBasis', 'eik', 'address', 'oblast', 'rep', 'repPosition', 'phone', 'email', 'web', 'place'].map(k => [k, p[k] || ''])),
     mailbox: box, sharedBox: !p.mailbox, sampleReplyTo: plusOf(box, tagFor(p, regNoFor(p, y, 1))),
     mailPoll: await pollOn(app, code), mailLastRun: boxRun ? Object.assign({ at: last.at }, boxRun) : {},

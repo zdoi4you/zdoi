@@ -1,6 +1,7 @@
 /*
  * Документи в PDF (pdfmake, MIT): заявление по ЗДОИ, уточнение (чл. 29), писмо и досие на преписка за съда.
- * Бланката е с логото на ЗДОИ4You и адреса my.zdoi4you.eu. pdfmake се зарежда само при нужда.
+ * Бланката на всички лица е с логото на ЗДОИ4You и адреса my.zdoi4you.eu; по желание и с логото на лицето.
+ * pdfmake се зарежда само при нужда.
  */
 
 const BLUE = '#0E3A6E', GRAY = '#44546A', LINE = '#1A8FE3';
@@ -35,10 +36,25 @@ export async function ready() {
 
 const orgLine = o => [o.address, o.email && `имейл: ${o.email}`, o.eik && `${idLabel(o.regBasis)} ${o.eik}`].filter(Boolean).join(' · ');
 
-/* Сдружението е с логото и марката на ЗДОИ4You; другите лица – със своите наименование и интернет адрес */
+/* всички лица са с логото на ЗДОИ4You и адреса my.zdoi4you.eu; Сдружението – и с марката ЗДОИ4You, другите – със своето наименование */
 const isZdoi = o => o.isDefault !== false;
 const brandOf = o => o.brand || (isZdoi(o) ? 'ЗДОИ4You' : o.name);
-const webOf = o => o.web || (isZdoi(o) ? 'my.zdoi4you.eu' : '');
+const webOf = o => o.web || 'my.zdoi4you.eu';
+
+/* логото на лицето: зарежда се от системата при генериране (app.js подава функцията) */
+let logoLoader = null;
+export const setLogoLoader = fn => { logoLoader = fn; };
+const withLogo = (def, o) => Object.assign(def, o && o.logo && o.code ? { _logo: { code: o.code, ver: o.logo } } : {});
+async function images(def) {
+  const out = { logo: await ready() };
+  if (def._logo) {
+    const data = logoLoader ? await logoLoader(def._logo.code, def._logo.ver) : null;
+    if (!data) throw new Error('Логото на лицето не може да се зареди. Опитайте отново или го качете наново в „Система“.');
+    out.plogo = data;
+  }
+  delete def._logo;
+  return out;
+}
 
 function letterhead(o) {
   const info = { stack: [
@@ -47,8 +63,11 @@ function letterhead(o) {
     { text: orgLine(o), fontSize: 8.5, color: GRAY },
     webOf(o) ? { text: webOf(o), fontSize: 9, color: LINE, bold: true } : null
   ].filter(Boolean), alignment: 'right' };
+  // логото на ЗДОИ4You – винаги; логото на лицето (ако е качено) – до него
+  const logos = [{ image: 'logo', width: o.logo ? 104 : 120 }];
+  if (o.logo) logos.push({ image: 'plogo', fit: [96, 50], width: 96 });
   return [
-    isZdoi(o) ? { columns: [{ image: 'logo', width: 120 }, info], columnGap: 12 } : info,
+    { columns: logos.concat([info]), columnGap: 12 },
     { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 495, y2: 0, lineWidth: 1, lineColor: LINE }], margin: [0, 8, 0, 12] }
   ];
 }
@@ -109,7 +128,7 @@ function signature(p) {
 const attachmentsList = p => (p.attachments && p.attachments.length ? [{ text: 'Приложения:', bold: true, margin: [0, 10, 0, 2] }, numbered(p.attachments)] : []);
 
 function frame(p, content, label) {
-  return {
+  return withLogo({
     pageSize: 'A4', pageMargins: [50, 40, 50, 54],
     info: { title: `${label} ${p.outNo || ''}`.trim(), author: p.org.name, creator: 'ЗДОИ4You · my.zdoi4you.eu' },
     defaultStyle: { font: 'Roboto', fontSize: 10.5, lineHeight: 1.22, color: '#111827' },
@@ -118,7 +137,7 @@ function frame(p, content, label) {
       { text: [brandOf(p.org), webOf(p.org), p.outNo ? 'Изх. № ' + p.outNo : ''].filter(Boolean).join(' · ') },
       { text: `стр. ${page} от ${count}`, alignment: 'right', width: 70 }
     ] })
-  };
+  }, p.org);
 }
 
 /* ---------- заявление (чл. 24–26 ЗДОИ) ---------- */
@@ -288,11 +307,11 @@ export function dossierDef(data) {
 /* ---------- изход ---------- */
 
 export async function blobOf(def) {
-  def.images = { logo: await ready() };
+  def.images = await images(def);
   return new Promise(ok => window.pdfMake.createPdf(def).getBlob(ok));
 }
 export async function base64Of(def) {
-  def.images = { logo: await ready() };
+  def.images = await images(def);
   return new Promise(ok => window.pdfMake.createPdf(def).getBase64(ok));
 }
 export async function open(def, name) {

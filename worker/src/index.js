@@ -125,6 +125,8 @@ export const ACTIONS = {
   'users.invite': { auth: 'admin', perm: 'users', fn: users.usersInvite },
 
   'persons.list': { auth: 'super', fn: persons.personsList },
+  'person.logo': { auth: 'user', fn: persons.personLogo },
+  'person.logo.save': { auth: 'user', perm: 'system', big: true, fn: persons.personLogoSave },
   'persons.save': { auth: 'super', fn: persons.personsSave }
 };
 
