@@ -72,6 +72,7 @@ export const ACTIONS = {
   'registry.search': { auth: 'user', fn: registry.registrySearch },
   'registry.refresh': { auth: 'user', perm: 'addressees', fn: registry.registryRefresh },
   'registry.import': { auth: 'user', perm: 'addressees', fn: registry.registryImport },
+  'registry.monImport': { auth: 'user', perm: 'addressees', big: true, fn: registry.registryMonImport },
   'addressee.delete': { auth: 'user', perm: 'addressees', fn: cases.addresseeDelete },
   'department.list': { auth: 'user', fn: users.departmentsList },
   'department.save': { auth: 'user', perm: 'departments', fn: users.departmentsSave },

@@ -1281,58 +1281,121 @@ const ADDRESSEE_FIELDS = () => [
   { k: 'phone', label: 'Телефон', type: 'tel', max: 40 }
 ];
 
-/* регистърът на административните структури (ИИСДА, data.egov.bg) – търсене, добавяне в адресатите */
-async function registryView(addressees, tabs) {
-  const r0 = await api('registry.search', { q: '', limit: 1, facets: true });
-  const q = h('input', { type: 'search', placeholder: 'Търсене: наименование, БУЛСТАТ, имейл, община…', 'aria-label': 'Търсене' });
+/*
+ * Регистри за адресати: административните структури (ИИСДА) и училищата, детските градини и центровете (МОН).
+ * И двата се теглят от data.egov.bg; при училищата БУЛСТАТ и имейл се добавят с файл от ri.mon.bg.
+ */
+const REG_SOURCES = {
+  iisda: { title: 'Администрации (ИИСДА)', what: 'структури', placeholder: 'Търсене: наименование, БУЛСТАТ, имейл, община…' },
+  mon: { title: 'Училища и детски градини (МОН)', what: 'институции', placeholder: 'Търсене: наименование, код по НЕИСПУО, БУЛСТАТ, директор, община…' }
+};
+const regKey = (source, x) => (source === 'mon' ? x.key : x.eik);
+
+/* файл от регистъра на институциите (ri.mon.bg): CSV или Excel; колоните се разпознават по заглавията */
+async function readMonFile(file) {
+  const buf = await file.arrayBuffer();
+  let rows;
+  if (/\.csv$|text\/csv/i.test(file.name + ' ' + file.type)) {
+    let text = new TextDecoder('utf-8').decode(buf);
+    if (/�/.test(text)) text = new TextDecoder('windows-1251').decode(buf);
+    const sep = (text.split('\n')[0].match(/;/g) || []).length > (text.split('\n')[0].match(/,/g) || []).length ? ';' : text.includes('\t') ? '\t' : ',';
+    rows = text.split(/\r?\n/).filter(l => l.trim()).map(l => { const out = []; let cur = '', q = false; for (const ch of l) { if (ch === '"') q = !q; else if (ch === sep && !q) { out.push(cur); cur = ''; } else cur += ch; } out.push(cur); return out.map(c => c.trim()); });
+  } else {
+    if (!window.XLSX) await new Promise((ok, bad) => { const s = document.createElement('script'); s.src = 'vendor/xlsx.full.min.js'; s.onload = ok; s.onerror = () => bad(new Error('Библиотеката за Excel не се зареди.')); document.head.append(s); });
+    const wb = window.XLSX.read(buf, { type: 'array' });
+    rows = window.XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+  }
+  const hi = rows.findIndex(r => r.some(c => /неиспуо|код по/i.test(String(c))) && r.some(c => /еик|булстат|e-?mail|имейл|поща/i.test(String(c))));
+  if (hi < 0) throw new Error('Не са открити колони „Код по НЕИСПУО“ и „ЕИК/БУЛСТАТ“ или „Имейл“. Изтеглете списъка от ri.mon.bg без промени.');
+  const head = rows[hi].map(c => String(c).toLowerCase());
+  const col = re => head.findIndex(c => re.test(c));
+  const ix = { code: col(/неиспуо/) >= 0 ? col(/неиспуо/) : col(/^код/), bulstat: col(/еик|булстат/), email: col(/e-?mail|имейл|електронна поща/), phone: col(/телефон/) };
+  return rows.slice(hi + 1).map(r => ({ code: String(r[ix.code] || '').trim(), bulstat: ix.bulstat >= 0 ? String(r[ix.bulstat] || '').trim() : '', email: ix.email >= 0 ? String(r[ix.email] || '').trim() : '', phone: ix.phone >= 0 ? String(r[ix.phone] || '').trim() : '' }))
+    .filter(r => /\d/.test(r.code));
+}
+
+async function registryView(addressees, tabs, source) {
+  source = source === 'mon' ? 'mon' : 'iisda';
+  const S = REG_SOURCES[source];
+  const r0 = await api('registry.search', { source, q: '', limit: 1, facets: true });
+  const q = h('input', { type: 'search', placeholder: S.placeholder, 'aria-label': 'Търсене' });
   const kind = h('select', { 'aria-label': 'Вид' }, h('option', { value: '' }, 'Всички видове'), r0.kinds.map(k => h('option', { value: k }, k)));
   const obl = h('select', { 'aria-label': 'Област' }, h('option', { value: '' }, 'Всички области'), r0.oblasts.map(k => h('option', { value: k }, k)));
   const body = h('div'), info = h('p', { class: 'small muted' });
-  const have = new Set(addressees.map(a => a.eik).filter(Boolean));
+  // вече в адресатите на лицето: по БУЛСТАТ, а училищата без БУЛСТАТ – по наименование и община
+  const have = x => addressees.some(a => (x.eik && a.eik === x.eik) || (a.name === x.name && (!x.muni || (a.seat || '') === x.muni)));
   let shown = [], timer = null;
-  const add = async (eiks, btn) => {
+  const add = async (list, btn) => {
     if (btn) btn.disabled = true;
     let added = 0, updated = 0;
     try {
-      for (let i = 0; i < eiks.length; i += 40) {
-        const r = await api('registry.import', { eiks: eiks.slice(i, i + 40), person: curCode || '' });
+      for (let i = 0; i < list.length; i += 40) {
+        const r = await api('registry.import', { source, keys: list.slice(i, i + 40).map(x => regKey(source, x)), person: curCode || '' });
         added += r.added; updated += r.updated;
-        if (btn) btn.textContent = 'Добавяне… ' + Math.min(i + 40, eiks.length) + '/' + eiks.length;
+        if (btn) btn.textContent = 'Добавяне… ' + Math.min(i + 40, list.length) + '/' + list.length;
       }
-      eiks.forEach(e => have.add(e));
+      addressees = (await api('addressee.list', { person: curCode || '' })).addressees;
       toast('Адресати: добавени ' + added + ', обновени ' + updated + '.');
       draw();
     } catch (e) { toast(e.message); if (btn) btn.disabled = false; }
   };
   const run = async () => {
-    const r = await api('registry.search', { q: q.value, kind: kind.value, oblast: obl.value, limit: 700 });
+    const r = await api('registry.search', { source, q: q.value, kind: kind.value, oblast: obl.value, limit: 700 });
     shown = r.items;
-    info.replaceChildren('Намерени: ' + r.total + ' от ' + r.all + ' структури. ');
+    info.replaceChildren('Намерени: ' + r.total + ' от ' + r.all + ' ' + S.what + '.' + (source === 'mon' ? ' С БУЛСТАТ: ' + (r.withEik || 0) + '.' : ''));
     draw();
   };
+  const contact = x => [x.email ? h('a', { href: 'mailto:' + x.email }, x.email) : h('span', { class: 'muted' }, 'без имейл'), x.phone ? h('div', { class: 'muted' }, x.phone) : null,
+    x.web ? h('div', null, h('a', { href: /^https?:/.test(x.web) ? x.web : 'https://' + x.web, target: '_blank', rel: 'noopener noreferrer' }, x.web)) : null];
   const draw = () => {
-    body.replaceChildren(table(['Структура', 'ЕИК/БУЛСТАТ', 'Адрес', 'Имейл и телефон', ''], shown.slice(0, 300).map(x => h('tr', null,
-      h('td', null, h('b', null, x.name), h('div', { class: 'small muted' }, x.kind + (x.parent ? ' · към ' + x.parent : ''))),
-      h('td', { class: 'mono' }, x.eik || '—'),
+    const head = source === 'mon' ? ['Институция', 'НЕИСПУО / БУЛСТАТ', 'Адрес', 'Имейл, телефон, сайт', ''] : ['Структура', 'ЕИК/БУЛСТАТ', 'Адрес', 'Имейл и телефон', ''];
+    body.replaceChildren(table(head, shown.slice(0, 300).map(x => h('tr', null,
+      h('td', null, h('b', null, x.name), h('div', { class: 'small muted' }, x.kind + (x.parent ? ' · към ' + x.parent : '') + (x.director ? ' · директор: ' + x.director : ''))),
+      source === 'mon' ? h('td', { class: 'mono small' }, x.code, h('br'), x.eik ? x.eik : h('span', { class: 'muted' }, 'без БУЛСТАТ')) : h('td', { class: 'mono' }, x.eik || '—'),
       h('td', { class: 'small' }, x.address || '—', x.oblast ? h('div', { class: 'muted' }, 'обл. ' + x.oblast) : null),
-      h('td', { class: 'small' }, x.email ? h('a', { href: 'mailto:' + x.email }, x.email) : '—', x.phone ? h('div', { class: 'muted' }, x.phone) : null, x.web ? h('div', null, h('a', { href: /^https?:/.test(x.web) ? x.web : 'https://' + x.web, target: '_blank', rel: 'noopener noreferrer' }, x.web)) : null),
-      h('td', null, have.has(x.eik) ? h('span', { class: 'pill ok' }, 'в адресатите') : can('addressees') ? h('button', { class: 'btn sm', onclick: e => add([x.eik], e.target) }, 'Добави') : null))),
-      'Няма структури по тези условия.'), ...(shown.length > 300 ? [h('p', { class: 'small muted' }, 'Показани са първите 300 – стеснете търсенето.')] : []));
+      h('td', { class: 'small' }, contact(x)),
+      h('td', null, have(x) ? h('span', { class: 'pill ok' }, 'в адресатите') : can('addressees') ? h('button', { class: 'btn sm', onclick: e => add([x], e.target) }, 'Добави') : null))),
+      'Няма ' + S.what + ' по тези условия.'), ...(shown.length > 300 ? [h('p', { class: 'small muted' }, 'Показани са първите 300 – стеснете търсенето.')] : []));
   };
-  [q].forEach(x => x.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run().catch(e => toast(e.message)), 200); }));
+  q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run().catch(e => toast(e.message)), 200); });
   [kind, obl].forEach(x => x.addEventListener('input', () => run().catch(e => toast(e.message))));
   const m = r0.meta || {};
+  const srcTabs = h('div', { class: 'seg' }, Object.entries(REG_SOURCES).map(([k, v]) => h('button', { class: 'btn sm' + (k === source ? ' primary' : ''), onclick: () => { location.hash = '#/addressees?registry' + (k === 'mon' ? '-mon' : ''); } }, v.title)));
+  // училища: файл от ri.mon.bg с БУЛСТАТ и имейл
+  const monFile = h('input', { type: 'file', accept: '.csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', hidden: true, onchange: async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      const rows = await readMonFile(f);
+      if (!rows.length) throw new Error('Във файла няма редове с код по НЕИСПУО.');
+      const r = await api('registry.monImport', { rows, fileName: f.name });
+      toast('От файла: свързани ' + r.matched + (r.unknown ? ', непознати кодове ' + r.unknown : '') + (r.bad ? ', невалиден БУЛСТАТ ' + r.bad : '') + '. Общо с данни: ' + r.total + '.');
+      addresseesView('registry-mon');
+    } catch (ex) { toast(ex.message); }
+    e.target.value = '';
+  } });
   setView(head('Адресати', tabs,
       can('addressees') ? h('button', { class: 'btn', onclick: e => {
-        const list = shown.filter(x => x.eik && !have.has(x.eik)).map(x => x.eik);
+        const list = shown.filter(x => !have(x));
         if (!list.length) return toast('Всички показани вече са в адресатите.');
-        if (confirm('Да се добавят ли ' + list.length + ' структури в адресатите?')) add(list, e.target);
+        if (confirm('Да се добавят ли ' + list.length + ' ' + S.what + ' в адресатите?')) add(list, e.target);
       } }, 'Добави показаните в адресати') : null,
-      can('addressees') ? h('button', { class: 'btn', onclick: async e => { e.target.disabled = true; try { const r = await api('registry.refresh'); toast('Регистърът е обновен: ' + r.name + ' (' + r.count + ').'); addresseesView('registry'); } catch (ex) { toast(ex.message); e.target.disabled = false; } } }, 'Обнови') : null),
+      can('addressees') ? h('button', { class: 'btn', onclick: async e => { e.target.disabled = true; try { const r = await api('registry.refresh', { source }); toast('Обновено: ' + r.name + ' (' + r.count + ').'); addresseesView(source === 'mon' ? 'registry-mon' : 'registry'); } catch (ex) { toast(ex.message); e.target.disabled = false; } } }, 'Обнови') : null),
+    h('div', { class: 'mb-12' }, srcTabs),
     manyPersons() && curPerson() ? h('p', { class: 'small muted mb-4' }, '„Добави“ ги записва в адресатите на ', h('b', null, curPerson().name), '.') : null,
-    h('p', { class: 'small muted mb-12' }, 'Административните структури от Интегрираната информационна система на държавната администрация (ИИСДА) – наименование, ЕИК/БУЛСТАТ, адрес, имейл, телефон. Източник: ',
-      h('a', { href: m.source || 'https://data.egov.bg/data/view/fd4218f2-72fa-44f2-853b-79aa1d7d6c2a', target: '_blank', rel: 'noopener noreferrer' }, 'Портал за отворени данни'),
-      m.name ? ' – ' + m.name + ' (заредено ' + fmtTime(m.at) + ').' : '.', ' Обновява се автоматично при нов месечен ресурс. При ново заявление субектът се търси и оттук.'),
+    source === 'mon'
+      ? h('div', { class: 'stack mb-12' },
+        h('p', { class: 'small muted' }, 'Училищата, детските градини, центровете за подкрепа за личностно развитие и специализираните обслужващи звена – код по НЕИСПУО, директор, адрес и сайт. Източник: ',
+          h('a', { href: m.source || 'https://data.egov.bg/data/view/9d72ecff-e079-48a4-bc0a-1312bff178f6', target: '_blank', rel: 'noopener noreferrer' }, 'отворените данни на МОН'),
+          m.name ? ' – ' + m.name + ' (заредено ' + fmtTime(m.at) + ').' : '.', ' Обновява се автоматично при нов списък.'),
+        h('div', { class: 'note' }, h('b', null, 'БУЛСТАТ и имейл. '), 'Те не са в отворените данни, а в регистъра на институциите на МОН, който се отваря само в браузър. Отворете ',
+          h('a', { href: 'https://ri.mon.bg/active-institutions', target: '_blank', rel: 'noopener noreferrer' }, 'ri.mon.bg/active-institutions'),
+          ', изтеглете списъка (Excel или CSV) и го заредете тук – данните се свързват по кода по НЕИСПУО. Колоната „ЕИК“ в регистъра съдържа кода по БУЛСТАТ на училището и се записва като БУЛСТАТ. Заредете нов файл, когато е нужно обновяване.',
+          m.extraAt ? h('div', { class: 'small mt-8' }, 'Последен файл: ' + (m.extraName || '—') + ' · ' + fmtTime(m.extraAt) + ' · институции с данни: ' + (m.extraCount || 0)) : null,
+          can('addressees') ? h('div', { class: 'actions mt-8' }, monFile, h('button', { class: 'btn sm primary', onclick: () => monFile.click() }, 'Зареди файл от ri.mon.bg')) : null))
+      : h('p', { class: 'small muted mb-12' }, 'Административните структури от Интегрираната информационна система на държавната администрация (ИИСДА) – наименование, ЕИК/БУЛСТАТ, адрес, имейл, телефон. Източник: ',
+        h('a', { href: m.source || 'https://data.egov.bg/data/view/fd4218f2-72fa-44f2-853b-79aa1d7d6c2a', target: '_blank', rel: 'noopener noreferrer' }, 'Портал за отворени данни'),
+        m.name ? ' – ' + m.name + ' (заредено ' + fmtTime(m.at) + ').' : '.', ' Обновява се автоматично при нов месечен ресурс. При ново заявление субектът се търси и оттук.'),
     h('div', { class: 'card' }, h('div', { class: 'filters' }, q, kind, obl), info, body));
   await run();
 }
@@ -1341,9 +1404,9 @@ async function addresseesView(query) {
   loading();
   try {
     const { addressees } = await api('addressee.list', { person: curCode || '' });
-    const tabs = h('div', { class: 'seg' }, h('button', { class: 'btn sm' + (query === 'registry' ? '' : ' primary'), onclick: () => { location.hash = '#/addressees'; } }, 'Моите адресати'),
-      h('button', { class: 'btn sm' + (query === 'registry' ? ' primary' : ''), onclick: () => { location.hash = '#/addressees?registry'; } }, 'Регистър на администрациите'));
-    if (query === 'registry') return await registryView(addressees, tabs);
+    const tabs = h('div', { class: 'seg' }, h('button', { class: 'btn sm' + (/^registry/.test(query || '') ? '' : ' primary'), onclick: () => { location.hash = '#/addressees'; } }, 'Моите адресати'),
+      h('button', { class: 'btn sm' + (/^registry/.test(query || '') ? ' primary' : ''), onclick: () => { location.hash = '#/addressees?registry'; } }, 'Регистри (администрации, училища)'));
+    if (/^registry/.test(query || '')) return await registryView(addressees, tabs, query === 'registry-mon' ? 'mon' : 'iisda');
     const edit = a => enhanceParty(formDialog(a._id ? 'Адресат' : 'Нов адресат', ADDRESSEE_FIELDS(), a, 'Запази', async v => {
       await api('addressee.save', Object.assign(v, { id: a._id || '', person: curCode || '' })); toast('Запазено.'); addresseesView();
     }, { wide: true }));
@@ -1935,11 +1998,14 @@ function entitySearch(addressees, pick) {
     if (t.length < 2) { list.hidden = true; return; }
     const own = addressees.filter(a => [a.name, a.eik, a.email].some(v => low(v).includes(t))).slice(0, 6);
     let reg = [];
-    try { reg = (await api('registry.search', { q: input.value.trim(), limit: 8 })).items.filter(x => !own.some(a => a.eik && a.eik === x.eik)); } catch (_) { reg = []; }
+    try {
+      const [a, b] = await Promise.all([api('registry.search', { q: input.value.trim(), limit: 6 }), api('registry.search', { source: 'mon', q: input.value.trim(), limit: 6 }).catch(() => ({ items: [] }))]);
+      reg = a.items.map(x => Object.assign({ src: 'ИИСДА' }, x)).concat(b.items.map(x => Object.assign({ src: 'МОН' }, x))).filter(x => !own.some(o => (o.eik && o.eik === x.eik) || o.name === x.name));
+    } catch (_) { reg = []; }
     const row = (kind, name, sub, onPick) => h('a', { href: '#', role: 'option', onclick: e => { e.preventDefault(); onPick(); list.hidden = true; input.value = ''; } },
       h('span', { class: 'sr-kind' }, kind), h('span', { class: 'sr-main' }, h('b', null, name), h('span', null, sub)));
     const items = own.map(a => row('Адресат', a.name, [a.eik, a.email].filter(Boolean).join(' · '), () => pick(a, false)))
-      .concat(reg.map(x => row('ИИСДА', x.name, [x.eik, x.email, x.oblast].filter(Boolean).join(' · '), () => pick({ name: x.name, regBasis: boot.lists.regBasis[2], eik: x.eik, address: x.address, oblast: x.oblast, email: x.email, phone: x.phone }, true))));
+      .concat(reg.map(x => row(x.src, x.name, [x.eik, x.email, x.muni || x.oblast].filter(Boolean).join(' · '), () => pick({ name: x.name, regBasis: boot.lists.regBasis[2], eik: x.eik, address: x.address, oblast: x.oblast, email: x.email, phone: x.phone }, true))));
     list.replaceChildren(...(items.length ? items : [h('div', { class: 'empty' }, 'Няма намерени. Попълнете данните ръчно.')]));
     list.hidden = false;
   };
@@ -1947,7 +2013,7 @@ function entitySearch(addressees, pick) {
   input.addEventListener('keydown', e => { if (e.key === 'Escape') list.hidden = true; if (e.key === 'Enter') { e.preventDefault(); const a = list.querySelector('a'); if (a) a.click(); } });
   document.addEventListener('click', e => { if (!input.parentNode || !input.parentNode.contains(e.target)) list.hidden = true; });
   return h('label', { class: 'field full entity-search' }, h('span', null, 'Търсене на субекта'), h('div', { class: 'search-wrap' }, input, list),
-    h('small', null, 'Данните на административните структури са от регистъра на ИИСДА (data.egov.bg). Проверете имейла за заявления по ЗДОИ на сайта на органа.'));
+    h('small', null, 'Администрациите са от ИИСДА, училищата и детските градини – от МОН (data.egov.bg). Проверете имейла за заявления по ЗДОИ на сайта на субекта.'));
 }
 
 async function requestEditView(regNo) {
