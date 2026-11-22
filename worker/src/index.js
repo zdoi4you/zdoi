@@ -23,6 +23,7 @@ import * as kep from './kep.js';
 import * as persons from './persons.js';
 import * as courts from './courts.js';
 import * as registry from './registry.js';
+import * as verify from './verify.js';
 import { ROLE_SUPER, isAdminRole } from './config.js';
 import { SCHEMA_VER } from './schema.js';
 
@@ -70,6 +71,7 @@ export const ACTIONS = {
   'addressee.list': { auth: 'user', fn: cases.addresseeList },
   'addressee.save': { auth: 'user', perm: 'addressees', fn: cases.addresseeSave },
   'registry.search': { auth: 'user', fn: registry.registrySearch },
+  'verify.eik': { auth: 'user', fn: verify.verifyEik },
   'registry.refresh': { auth: 'user', perm: 'addressees', fn: registry.registryRefresh },
   'registry.import': { auth: 'user', perm: 'addressees', fn: registry.registryImport },
   'registry.monImport': { auth: 'user', perm: 'addressees', big: true, fn: registry.registryMonImport },
@@ -130,6 +132,30 @@ export const ACTIONS = {
   'person.logo.save': { auth: 'user', perm: 'system', big: true, fn: persons.personLogoSave },
   'persons.save': { auth: 'super', fn: persons.personsSave }
 };
+
+/* ---------- Cron ---------- */
+
+/*
+ * На всеки 5 минути: насрочените писма, пощата, напомнянията и сертификатът за КЕП. Тежките задачи с много външни заявки
+ * се редуват (Cloudflare позволява до 50 на пускане): 0 – училищата (МОН), 1 – публичните предприятия (АППК),
+ * 2 – делата в ЕПЕП и наборите от data.egov.bg. Всяка тежка задача идва на 15 минути.
+ */
+const quiet = (label, p, show) => p.then(r => { if (!show || show(r)) console.log(label, JSON.stringify(r)); }, e => console.error(label + ': ' + e.message));
+export async function runScheduled(app, at = Date.now()) {
+  const slot = Math.floor(at / 300000) % 3;
+  await quiet('схема', upgradeSchema(app), () => false);
+  await quiet('насрочени писма', reqs.sendScheduled(app), r => r.due);
+  await quiet('поща', reqs.pollMail(app));
+  await quiet('напомняния', cases.remindDeadlines(app), r => r.sent);
+  if (slot === 0) await quiet('МОН', registry.riTick(app, new Date(at), 30), r => r.ok || r.list || r.listError || r.detError);
+  if (slot === 1) await quiet('АППК', registry.appkTick(app, new Date(at)), r => r.ok || r.list || r.scanning || r.listError || r.detError);
+  if (slot === 2) {
+    await quiet('ЕПЕП', courts.epepDaily(app, new Date(at), 4), r => r.checked || r.errors);
+    await quiet('регистър', registry.registryDaily(app, new Date(at)), r => r.updated || r.iisda || r.mon);
+  }
+  await quiet('сертификат за КЕП', acme.ensureCert(app), r => r && (r.renewed || r.error));
+  return { slot };
+}
 
 /* ---------- среда ---------- */
 
@@ -278,17 +304,6 @@ export default {
   async scheduled(event, env, ctx) {
     const { store, kv } = services(env);
     const app = makeApp(env, store, kv, null);
-    // пощата на приемната – на всеки 5 минути; напомнянията – веднъж на ден след 8:00 ч.
-    ctx.waitUntil(upgradeSchema(app).then(() => reqs.sendScheduled(app)).then(r => { if (r.due) console.log('насрочени писма', JSON.stringify(r)); }, e => console.error('насрочени писма: ' + e.message)).then(() => reqs.pollMail(app)).then(r => console.log('поща', JSON.stringify(r)))
-      .then(() => cases.remindDeadlines(app)).then(r => console.log('напомняния', JSON.stringify(r)))
-      // делата в ЕПЕП – веднъж на ден след 7:00 ч., по няколко на пускане
-      .then(() => courts.epepDaily(app)).then(r => { if (r.checked || r.errors) console.log('ЕПЕП', JSON.stringify(r)); }, e => console.error('ЕПЕП: ' + e.message))
-      // регистърът на административните структури (data.egov.bg) – нов ресурс веднъж месечно, проверка веднъж на ден
-      .then(() => registry.registryDaily(app)).then(r => { if (r.updated) console.log('регистър', JSON.stringify(r)); }, e => console.error('регистър: ' + e.message))
-      // регистърът на институциите на МОН: списъкът веднъж на ден, подробностите (БУЛСТАТ, имейл) – по 25 на пускане
-      .then(() => registry.riTick(app)).then(r => { if (r.ok || r.list || r.listError || r.detError) console.log('МОН', JSON.stringify(r)); }, e => console.error('МОН: ' + e.message))
-      // публичните предприятия (АППК): списъкът веднъж на ден, подробностите – по 15 на пускане
-      .then(() => registry.appkTick(app)).then(r => { if (r.ok || r.list || r.listError || r.detError) console.log('АППК', JSON.stringify(r)); }, e => console.error('АППК: ' + e.message))
-      .then(() => acme.ensureCert(app)).then(r => console.log('сертификат за КЕП', JSON.stringify(r))));
+    ctx.waitUntil(runScheduled(app, event.scheduledTime || Date.now()));
   }
 };

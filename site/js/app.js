@@ -331,6 +331,7 @@ const NAV = () => [
     ['#/addressees', 'Адресати', 'contacts', true],
     ['#/departments', 'Отдели', 'org', true],
     ['#/calc', 'Калкулатор на срокове', 'calc', true],
+    ['#/verify', 'Проверка на ЕИК/БУЛСТАТ', 'search', true],
     ['#/kep', 'Проверка на КЕП', 'key', true]
   ]],
   ['Администрация', [
@@ -1894,6 +1895,61 @@ const REGISTRY_BULSTAT = 'https://reports.bulstat.bg/bulstat-ireports/report.jsf
 const capital = t => t.charAt(0).toUpperCase() + t.slice(1);
 
 /* полетата на страна (адресат, заявител, субект) с представка: етикетът на ЕИК/БУЛСТАТ следва регистрацията, а адресът има избор от списък */
+/* резултатът от проверката в Търговския регистър и регистър БУЛСТАТ */
+function verifyResult(r) {
+  const card = (title, x, body) => h('section', { class: 'card stack verify-card' },
+    h('div', { class: 'head m-0' }, h('h2', null, title), x.error ? h('span', { class: 'pill warn' }, 'недостъпен') : x.found ? h('span', { class: 'pill ' + (x.closed || x.active === false ? 'bad' : 'ok') }, x.status || x.state || 'вписан (без отбелязано състояние)') : h('span', { class: 'pill' }, 'няма запис')),
+    x.error ? h('p', { class: 'warn-text small' }, x.error) : x.found ? body : h('p', { class: 'muted small' }, 'Няма субект с този код в този регистър.'),
+    x.link ? h('a', { class: 'small', href: x.link, target: '_blank', rel: 'noopener noreferrer' }, 'Отвори справката в регистъра') : null);
+  const c = r.cr || {}, b = r.bulstat || {};
+  const lines = v => String(v || '').split('\n').filter(Boolean).map(t => h('div', null, t));
+  return h('div', { class: 'stack' },
+    (r.warnings || []).length ? h('div', { class: 'warnbox' }, r.warnings.map(w => h('div', null, '⚠ ' + w))) : null,
+    h('div', { class: 'grid2' },
+      card('Търговски регистър и регистър на ЮЛНЦ', c, kv([['Наименование', c.fullName || c.name], ['Правна форма', c.legalForm], ['Седалище и адрес', c.seat], ['Имейл', c.email],
+        ['Представители и органи', lines(c.representatives)], ['Начин на представляване', c.representation], ['Едноличен собственик', c.owner], ['Особени обстоятелства', (c.flags || []).join('; ')]])),
+      card('Регистър БУЛСТАТ', b, kv([['Наименование', b.name], ['Правна форма', b.legalForm], ['Състояние', b.state], ['Адрес', b.address], ['Комуникации', b.contacts],
+        ['Управление', b.management], ['Принадлежност', b.parent], ['Собственост', b.owners], ['Дейност', b.activity]]))),
+    h('p', { class: 'small muted' }, 'Проверено ' + fmtTime(r.at) + (r.cached ? ' (от последните 12 часа)' : '') + '. Източници: Агенция по вписванията и регистър БУЛСТАТ.'));
+}
+
+/* проверка по ЕИК/БУЛСТАТ; fill(данни) – попълва формата, от която е отворена */
+async function verifyDialog(eik, fill) {
+  const box = h('div', null, h('p', { class: 'loading' }, 'Проверка в Търговския регистър и регистър БУЛСТАТ…'));
+  const dlg = dialog('Проверка на ' + eik, h('div', { class: 'stack' }, box,
+    h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, 'Затвори'))), { wide: true });
+  try {
+    const r = await api('verify.eik', { eik });
+    const c = r.cr || {}, b = r.bulstat || {};
+    const data = c.found || b.found ? {
+      name: (c.fullName || c.name || b.name || '').replace(/^"([^"]+)"\s*(.*)$/, (m, n, f) => (f ? n + ' ' + f : n)),
+      regBasis: c.found ? boot.lists.regBasis[1] : boot.lists.regBasis[2], address: c.seat || b.address || '', email: c.email || '',
+      rep: ((c.representatives || b.management || '').split('\n')[0] || '').replace(/, Държава: .*$/, '').replace(/\s*-\s*[^-]+$/, '')
+    } : null;
+    box.replaceChildren(verifyResult(r), fill && data ? h('div', { class: 'actions mt-8' }, h('button', { type: 'button', class: 'btn primary', onclick: () => { fill(data); dlg.close(); toast('Данните са попълнени от регистъра – проверете ги.'); } }, 'Попълни данните от регистъра'),
+      h('span', { class: 'small muted' }, 'Попълва наименованието, вида регистрация, адреса' + (data.email ? ', имейла' : '') + ' и представителя (ако има такова поле).')) : null);
+  } catch (e) { box.replaceChildren(h('p', { class: 'err' }, e.message)); }
+}
+
+/* страница „Проверка на ЕИК/БУЛСТАТ“ */
+function verifyView(query) {
+  const input = h('input', { type: 'text', inputmode: 'numeric', maxlength: 13, placeholder: 'ЕИК или код по БУЛСТАТ (9 или 13 цифри)', 'aria-label': 'ЕИК/БУЛСТАТ', value: new URLSearchParams(query || '').get('eik') || '' });
+  const out = h('div');
+  const run = async fresh => {
+    const eik = input.value.replace(/\D/g, '');
+    if (!/^(\d{9}|\d{13})$/.test(eik)) return toast('Въведете 9 или 13 цифри.');
+    history.replaceState(null, '', '#/verify?eik=' + eik);
+    out.replaceChildren(h('p', { class: 'loading' }, 'Проверка…'));
+    try { out.replaceChildren(verifyResult(await api('verify.eik', { eik, fresh: !!fresh }))); } catch (e) { out.replaceChildren(h('p', { class: 'err' }, e.message)); }
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  setView(head('Проверка на ЕИК/БУЛСТАТ'),
+    h('p', { class: 'small muted mb-12' }, 'Актуално състояние в Търговския регистър и регистъра на ЮЛНЦ (Агенция по вписванията) и в регистър БУЛСТАТ: наименование, правна форма, седалище и адрес, имейл, представители, състояние (вписан, заличен, в ликвидация, несъстоятелност), принадлежност.'),
+    h('div', { class: 'card stack mb-16' }, h('div', { class: 'filters m-0' }, input, h('button', { class: 'btn primary', onclick: () => run() }, 'Провери'), h('button', { class: 'btn', title: 'Без запомнения резултат', onclick: () => run(true) }, 'Провери наново'))),
+    out);
+  if (input.value) run();
+}
+
 function enhanceParty(root, prefix = '') {
   const el = n => root.querySelector(`[name="${prefix}${n}"]`);
   const basis = el('regBasis'), eik = el('eik'), addr = el('address'), obl = el('oblast');
@@ -1906,7 +1962,14 @@ function enhanceParty(root, prefix = '') {
         : /ЕИК/.test(basis.value) ? h('a', { href: REGISTRY_TR, target: '_blank', rel: 'noopener' }, 'Справка в Търговския регистър') : '');
     };
     basis.addEventListener('change', sync);
-    eik.closest('label').append(links);
+    // проверка в регистрите и попълване на данните
+    const set = (n, v) => { const x = el(n); if (x && v) { x.value = v; x.dispatchEvent(new Event('change')); } };
+    const check = h('button', { type: 'button', class: 'btn sm verify-btn', onclick: () => {
+      const v = eik.value.replace(/\D/g, '');
+      if (!/^(\d{9}|\d{13})$/.test(v)) return toast('Въведете ЕИК/БУЛСТАТ (9 или 13 цифри).');
+      verifyDialog(v, d => { set('name', d.name); set('regBasis', d.regBasis); set('address', d.address); set('email', d.email); set('rep', d.rep); });
+    } }, 'Провери в регистрите');
+    eik.closest('label').append(links, check);
     sync();
   }
   if (addr) addr.closest('label').after(addressPicker(h, addr, obl));
@@ -3050,6 +3113,7 @@ async function route() {
     case 'profile': return profileView();
     case 'calc': return calcView();
     case 'kep': return kepView();
+    case 'verify': return verifyView(query);
     case 'requests': return requestsView(query);
     case 'request': return parts[1] === 'new' ? requestEditView(null) : parts[2] === 'edit' ? requestEditView(parts[1]) : requestView(parts[1]);
     case 'mail': return can('mailbox') ? mailInboxView() : noAccess('mailbox');
