@@ -279,7 +279,113 @@ export function courtDocDef(p) {
   return frame(p, content, p.heading || 'Документ');
 }
 
-export const DEFS = { 'Заявление': applicationDef, 'Уточнение': clarificationDef, 'Писмо': letterDef, 'Промяна на адрес': addressChangeDef, 'Съдебен документ': courtDocDef };
+/* ---------- протокол за проверка на електронните подписи (доказателство по делото) ---------- */
+
+const IND = { 'TOTAL-PASSED': 'ПОТВЪРДЕН (TOTAL-PASSED)', 'TOTAL-FAILED': 'НЕВАЛИДЕН (TOTAL-FAILED)', INDETERMINATE: 'НЕОПРЕДЕЛЕН (INDETERMINATE)', NO_SIGNATURE: 'НЯМА ПОДПИС' };
+const SUB = {
+  HASH_FAILURE: 'съдържанието е променено след подписването', SIG_CRYPTO_FAILURE: 'подписът не съответства на ключа', REVOKED: 'удостоверението е прекратено/спряно преди подписа',
+  REVOKED_NO_POE: 'удостоверението е прекратено след подписа, но липсва удостоверение за време', OUT_OF_BOUNDS_NO_POE: 'удостоверението не е било валидно към декларираното време',
+  EXPIRED: 'удостоверението е изтекло', NO_CERTIFICATE_CHAIN_FOUND: 'издателят не е намерен в доверителен списък', REVOCATION_UNKNOWN: 'статусът на удостоверението не може да се провери',
+  NO_SIGNING_CERTIFICATE_FOUND: 'липсва удостоверението на подписващия'
+};
+const yes = v => (v ? 'да' : 'не');
+const t = iso => (iso ? new Date(iso).toLocaleString('bg-BG', { timeZone: 'Europe/Sofia', dateStyle: 'short', timeStyle: 'medium' }) + ' ч.' : '—');
+const REV = r => (r.status === 'good' ? 'валидно – не е прекратено/спряно' : r.status === 'revoked' ? 'ПРЕКРАТЕНО/СПРЯНО' + (r.revokedAt ? ' на ' + t(r.revokedAt) : '') + (r.reason ? ' (' + r.reason + ')' : '') : 'не е проверено' + (r.note ? ': ' + r.note : ''));
+const small = (txt, o) => Object.assign({ text: txt, fontSize: 8.5 }, o || {});
+const mono = txt => ({ text: String(txt || '—'), fontSize: 7.5, font: 'Roboto', characterSpacing: 0.2 });
+const kvT = rows => ({ table: { widths: [160, '*'], dontBreakRows: true, body: rows.filter(Boolean).map(([k, v]) => [{ text: k, color: GRAY, fontSize: 8.5 }, typeof v === 'object' && v && !Array.isArray(v) ? v : { text: v === '' || v === null || v === undefined ? '—' : Array.isArray(v) ? (v.length ? v.join('\n') : '—') : String(v), fontSize: 8.5 }]) }, layout: 'lightHorizontalLines', margin: [0, 0, 0, 6] });
+const h3 = txt => ({ text: txt, bold: true, fontSize: 10.5, color: BLUE, margin: [0, 10, 0, 4] });
+
+function certRows(c, label) {
+  return [
+    [label || 'Удостоверение', c.subject],
+    ['Издател', c.issuer],
+    ['Сериен номер', mono(c.serial)],
+    ['Отпечатък SHA-256', mono(c.sha256)],
+    ['Валидност', t(c.notBefore) + ' – ' + t(c.notAfter)],
+    ['Ключ / алгоритъм на подписа', c.key + ' / ' + c.sigAlg],
+    c.keyUsage ? ['Предназначение на ключа', c.keyUsage.join(', ')] : null,
+    c.policies && c.policies.length ? ['Политики', c.policies] : null,
+    c.qc ? ['QC декларации (ETSI EN 319 412-5)', [c.qc.compliance ? 'QcCompliance – квалифицирано удостоверение' : 'няма QcCompliance', c.qc.sscd ? 'QcSSCD – ключът е в устройство за създаване на квалифициран подпис (QSCD)' : 'няма QcSSCD',
+      c.qc.types.length ? 'QcType: ' + c.qc.types.join(', ') : '', c.qc.pds.length ? 'PDS: ' + c.qc.pds.join(', ') : ''].filter(Boolean)] : null,
+    c.ski ? ['Идентификатор на ключа (SKI)', mono(c.ski)] : null
+  ];
+}
+
+export function protocolDef(p) {
+  const r = p.report || {}, src = p.source || {}, op = p.operator || {}, doc = r.document || {}, sum = r.summary || {};
+  const sigs = (r.signatures || []);
+  const content = [...letterhead(p.org), outLine(p), ...title('ПРОТОКОЛ', 'за проверка на електронните подписи в получен документ')];
+  content.push(P('Настоящият протокол удостоверява резултата от проверката на електронните подписи в документа, описан по-долу, извършена от ' + (op.name || op.username) + (op.position ? ', ' + op.position : '') +
+    ' чрез ' + (r.validator || 'ADM ЗДОИ4You') + ' на ' + t(r.checkedAt) + ' (часова зона Europe/Sofia), по реда на Регламент (ЕС) № 910/2014 и ЗЕДЕУУ.', { fontSize: 9.5 }));
+
+  content.push(h3('1. Проверен документ'));
+  content.push(kvT([
+    ['Файл', doc.name], ['Размер', doc.size + ' байта'], ['SHA-256 на файла', mono(doc.sha256)], ['SHA-512 на файла', mono(doc.sha512)],
+    ['Версии (ревизии) в PDF', doc.revisions], ['Последният подпис обхваща целия файл', yes(doc.lastCoversAll)], ['Данни за дългосрочна проверка (DSS)', yes(doc.hasDss)],
+    ['Преписка', src.regNo + (src.entity ? ' – ' + src.entity : '')], ['Получен', (src.channel || '') + (src.receivedAt ? ' на ' + t(src.receivedAt) : '')],
+    src.from ? ['Подател', src.from] : null, src.subject ? ['Тема / описание', src.subject] : null, src.ref ? ['Идентификатор (ССЕВ, вх. №)', src.ref] : null,
+    src.messageId ? ['Message-ID', mono(src.messageId)] : null
+  ]));
+
+  content.push(h3('2. Резултат'));
+  content.push(kvT([
+    ['Общ резултат', { text: IND[sum.overall] || sum.overall, bold: true, fontSize: 9, color: sum.overall === 'TOTAL-PASSED' ? '#157F3B' : sum.overall === 'TOTAL-FAILED' ? '#B42318' : '#8A5200' }],
+    ['Брой подписи / печати за време', (sum.count || 0) + ' / ' + (sum.timestamps || 0)],
+    ...sigs.map((s, i) => [`Подпис ${i + 1}`, s.kind === 'docTimestamp' ? 'документен печат за време – ' + (IND[s.indication] || s.indication) + (s.timestamp && s.timestamp.time ? ', ' + t(s.timestamp.time) : '')
+      : (s.signer ? s.signer.name + (s.signer.org ? ', ' + s.signer.org : '') : '—') + ' – ' + (IND[s.indication] || s.indication || 'грешка') + (s.subIndication ? ' (' + (SUB[s.subIndication] || s.subIndication) + ')' : '') + '\n' + (s.qualification || s.error || '')])
+  ]));
+  (r.legal || []).forEach(x => content.push(P(x, { fontSize: 9 })));
+
+  content.push(h3('3. Технически данни'));
+  sigs.forEach((s, i) => {
+    content.push({ text: `Подпис ${i + 1}` + (s.kind === 'docTimestamp' ? ' – документен печат за време' : s.signer ? ' – ' + s.signer.name : ''), bold: true, fontSize: 9.5, margin: [0, 6, 0, 3] });
+    if (s.error) content.push(small('Грешка: ' + s.error, { color: '#B42318', margin: [0, 0, 0, 4] }));
+    content.push(kvT([
+      ['Формат / ниво', (s.level || s.subFilter || '—') + (s.subFilter ? ' (SubFilter ' + s.subFilter + ')' : '')],
+      ['ByteRange', (s.byteRange || []).join(' ') + (s.coversAll ? ' – целият файл' : ' – без последните ' + s.unsignedBytes + ' байта')],
+      s.signedSha256 ? ['SHA-256 на подписаните байтове', mono(s.signedSha256.toUpperCase())] : null,
+      s.kind === 'signature' ? ['Алгоритми', 'хеш ' + (s.digestAlg || '—') + '; подпис ' + (s.sigAlg || '—')] : null,
+      s.kind === 'signature' ? ['Цялост (хеш = messageDigest)', yes(s.checks.integrity)] : null,
+      s.kind === 'signature' ? ['Криптографска проверка на подписа', yes(s.checks.signature)] : null,
+      s.kind === 'signature' ? ['Атрибут signingCertificate (v2)', yes(s.checks.signingCertAttr)] : null,
+      s.reason ? ['Основание (Reason)', s.reason] : null, s.location ? ['Място (Location)', s.location] : null,
+      s.kind === 'signature' ? ['Декларирано време на подписа', s.claimedTime ? t(s.claimedTime) + ' (' + s.claimedSource + ')' : '—'] : null,
+      s.timestamp ? ['Удостоверение за време', s.timestamp.error ? 'грешка: ' + s.timestamp.error : t(s.timestamp.time) + '; издател: ' + (s.timestamp.tsa ? s.timestamp.tsa.subject : '—') +
+        '; отпечатък: ' + yes(s.timestamp.imprint) + '; подпис: ' + yes(s.timestamp.signature) + '; квалифициран: ' + yes(s.timestamp.qualified) + '; сериен № ' + (s.timestamp.serial || '—') + '; политика ' + (s.timestamp.policy || '—')] : null,
+      s.kind === 'signature' ? ['Време, използвано за проверката', t(s.timeUsed) + ' (' + s.timeUsedSource + ')'] : null,
+      s.kind === 'signature' ? ['Валидно към момента на подписа / сега', yes(s.checks.validAtTime) + ' / ' + yes(s.checks.validNow)] : null
+    ]));
+    if (s.signer) content.push(kvT(certRows(s.signer, 'Подписващ (субект)')));
+    (s.chain || []).forEach(c => content.push(kvT(certRows(c, 'Издател – ' + c.role))));
+    if (s.trust) content.push(kvT([
+      ['Доверителен списък', s.trust.found ? s.trust.tl.cc + ' – ' + (s.trust.tl.operator || '') + '; № ' + s.trust.tl.seq + ', издаден ' + t(s.trust.tl.issued) + ', следващ ' + t(s.trust.tl.next) : (s.trust.error || 'издателят не е намерен в доверителен списък')],
+      s.trust.found ? ['Адрес на списъка', mono(s.trust.tl.url)] : null,
+      s.trust.found ? ['Доставчик / услуга', s.trust.tsp + ' / ' + s.trust.service + ' (' + s.trust.type + ')'] : null,
+      s.trust.found ? ['Статус на услугата към момента на подписа', s.trust.statusAt + (s.trust.statusFrom ? ' (от ' + t(s.trust.statusFrom) + ')' : '') + '; сега: ' + s.trust.statusNow] : null
+    ]));
+    if (s.revocation) content.push(kvT([
+      ['Прекратяване/спиране', REV(s.revocation)], ['Метод и адрес', (s.revocation.method || '—') + (s.revocation.url ? ' – ' + s.revocation.url : '')], ['Проверено на', t(s.revocation.checkedAt)]
+    ]));
+    if (s.warnings && s.warnings.length) content.push({ ul: s.warnings.map(w => small(w)), margin: [0, 0, 0, 6] });
+    if (s.kind === 'signature') content.push(small('Заключение: ' + (IND[s.indication] || s.indication) + (s.subIndication ? ' – ' + (SUB[s.subIndication] || s.subIndication) : '') + '. Вид: ' + s.qualification + '.', { bold: true, margin: [0, 0, 0, 6] }));
+  });
+
+  content.push(h3('4. Методика и правно основание'));
+  (r.method || []).forEach(x => content.push(P(x, { fontSize: 8.5 })));
+
+  content.push(h3('5. Цялост на протокола'));
+  content.push(kvT([
+    ['Контролна сума на данните от проверката (SHA-256)', mono(p.reportHash)],
+    ['Изготвил', (op.name || op.username) + (op.position ? ', ' + op.position : '') + ' (потребител ' + op.username + ')'],
+    ['Формат на данните', r.format]
+  ]));
+  content.push(P('Протоколът се подписва с квалифицирания електронен подпис на изготвилия го служител. Проверяваният файл се прилага към протокола; съвпадението му се установява по отпечатъка SHA-256 по т. 1.', { fontSize: 9 }));
+  content.push(signature(Object.assign({}, p, { org: Object.assign({}, p.org, { rep: op.name || op.username, repPosition: op.position || '' }), mode: '', signMode: 'electronic' })));
+  return frame(p, content, 'Протокол за проверка на подписи');
+}
+
+export const DEFS = { 'Заявление': applicationDef, 'Уточнение': clarificationDef, 'Писмо': letterDef, 'Промяна на адрес': addressChangeDef, 'Съдебен документ': courtDocDef, 'Протокол за проверка на подпис': protocolDef };
 
 /* ---------- досие на преписка (за съда и при връчвания) ---------- */
 

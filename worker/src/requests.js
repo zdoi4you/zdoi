@@ -7,7 +7,8 @@
 
 import { fail, str, line, stamp, todayIso, isoDate, oneOf, intIn, isEmail, validEik, view, byDesc } from './util.js';
 import { term, termMonths, daysBetween } from './calendar.js';
-import { audit, mail, insertUnique, setting, setSetting } from './core.js';
+import { audit, mail, insertUnique, setting, setSetting, throttle } from './core.js';
+import { validatePdf, summaryOf } from './validate.js';
 import { SCHEMA } from './schema.js';
 import { notifyOf } from './auth.js';
 import { usersBrief, assignCheck } from './users.js';
@@ -294,12 +295,18 @@ export async function docReserve(d, ctx, app) {
   if (d.outNo) {
     const doc = (await app.store.list('docs', { outNo: line(d.outNo, 30) }))[0];
     if (!doc || doc.regNo !== r.regNo) fail('notfound', 'Документът не е намерен.');
+    if (doc.kind === PROTOCOL_KIND) fail('value', 'Протоколът за проверка на подписите се създава от системата и не се редактира.');
     if (doc.sentAt) fail('value', 'Документът вече е изпратен и не се променя. Създайте нов.');
     if (/"_sig"\s*:/.test(doc.payload || '')) fail('value', 'Документът е подписан с КЕП и не се променя. Създайте нов.');
     await app.store.patch('docs', doc._id, { payload, title });
     await event(app, r.regNo, ctx.username, 'Документ', 'Редактиран: ' + doc.kind + ' изх. № ' + doc.outNo);
     return { outNo: doc.outNo, date: doc.date };
   }
+  return newDoc(app, ctx, r, kind, title, payload);
+}
+
+/* нов документ с Изх. № по преписката */
+async function newDoc(app, ctx, r, kind, title, payload) {
   const date = todayIso(), y = date.slice(0, 4), person = await personOf(app, codeOf(r));
   // проследяемост: първият документ по преписката получава главния Изх. №, следващите – същия с индекс (…-0005-1, …-0005-2)
   const main = mainOutNo(r, await app.store.list('docs', { regNo: r.regNo }));
@@ -309,6 +316,69 @@ export async function docReserve(d, ctx, app) {
   await event(app, r.regNo, ctx.username, 'Документ', kind + ' изх. № ' + rec.outNo);
   await audit(app, ctx.username, 'Нов документ', rec.outNo, kind + ' по ' + r.regNo);
   return { outNo: rec.outNo, date };
+}
+
+/* ---------- проверка на подписите в получените документи (eIDAS, ЗЕДЕУУ) и протокол за съда ---------- */
+
+export const PROTOCOL_KIND = 'Протокол за проверка на подпис';
+const isPdf = a => /pdf/i.test(a.contentType || '') || /\.pdf$/i.test(a.name || '');
+
+async function attachmentOf(app, ctx, d) {
+  const m = await app.store.get('mail', str(d.id, 20));
+  if (!m) fail('notfound', 'Писмото не е намерено.');
+  if (m.regNo) await findReq(app, m.regNo, ctx);
+  else if (!ctx.perms.mailbox || !(await myBoxes(app, ctx)).includes(m.box || mailboxAddress(app.env))) fail('notfound', 'Писмото не е намерено.');
+  const atts = safeJson(m.attachments || '[]');
+  const i = Number(d.index), a = Array.isArray(atts) ? atts[i] : null;
+  if (!a || !a.fileId) fail('notfound', 'Файлът не е намерен.');
+  return { m, atts, i, a };
+}
+
+async function checkAttachment(app, ctx, d) {
+  const x = await attachmentOf(app, ctx, d);
+  if (!isPdf(x.a)) fail('value', 'Проверката е за PDF документи (PAdES). Файлът „' + x.a.name + '“ не е PDF.');
+  const t = await throttle(app, 'sigcheck|' + ctx.username, 60);
+  if (await t.blocked()) fail('locked', 'Твърде много проверки. Опитайте след 15 минути.');
+  await t.hit();
+  const report = await validatePdf(app, await app.store.downloadFile(x.a.fileId), { name: x.a.name });
+  x.a.sig = summaryOf(report);
+  await app.store.patch('mail', x.m._id, { attachments: JSON.stringify(x.atts) });
+  return Object.assign(x, { report });
+}
+
+/* проверка на прикачен PDF; кратък резултат се пази към файла (за отметката в кореспонденцията) */
+export async function sigCheck(d, ctx, app) {
+  const x = await checkAttachment(app, ctx, d);
+  await audit(app, ctx.username, 'Проверка на подписите', x.m.regNo || '', x.a.name + ': ' + x.a.sig.overall + ' (' + x.a.sig.count + ' подписа)');
+  return { summary: x.a.sig, report: x.report };
+}
+
+/* протокол за проверка (за доказателство по делото): проверка наново, данни за източника и служителя; Изх. № по преписката */
+export async function sigProtocol(d, ctx, app) {
+  const x = await checkAttachment(app, ctx, d);
+  if (!x.m.regNo) fail('value', 'Писмото не е разпределено към преписка.');
+  const r = await findReq(app, x.m.regNo, ctx);
+  unlocked(r);
+  if (!x.report.summary.count) fail('value', 'В документа няма електронен подпис – протокол не се изготвя.');
+  const u = (await app.store.list('users', { username: ctx.username }))[0] || {};
+  const body = {
+    report: x.report,
+    source: { regNo: r.regNo, entity: r.entityName || '', file: x.a.name, size: x.a.size || x.report.document.size, direction: x.m.direction, from: x.m.from || '', subject: x.m.subject || '',
+      receivedAt: x.m.at || '', channel: x.m.channel || 'Имейл', ref: x.m.ref || '', messageId: x.m.messageId || '' },
+    operator: { username: ctx.username, name: ctx.name || ctx.username, position: u.position || '', ip: app.ip || '' }
+  };
+  const json = JSON.stringify(body);
+  body.reportHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(json))), b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  let payload = JSON.stringify(body);
+  if (payload.length > 60000) {
+    // твърде много подписи/вериги: без вторичните удостоверения във веригата (основните данни остават)
+    body.report.signatures.forEach(s => { (s.chain || []).forEach(c => { delete c.policies; delete c.crl; delete c.ocsp; delete c.caIssuers; }); });
+    payload = JSON.stringify(body);
+    if (payload.length > 60000) fail('size', 'Протоколът е твърде голям (прекалено много подписи в документа).');
+  }
+  const res = await newDoc(app, ctx, r, PROTOCOL_KIND, 'Протокол за проверка на подписите – ' + x.a.name, payload);
+  await event(app, r.regNo, ctx.username, 'Проверка на подпис', x.a.name + ': ' + x.report.summary.overall + ' – протокол изх. № ' + res.outNo);
+  return Object.assign(res, { payload: body });
 }
 
 /* главният Изх. № на преписката: на заявлението, иначе на първия документ без индекс */

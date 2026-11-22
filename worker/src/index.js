@@ -107,6 +107,8 @@ export const ACTIONS = {
   'doc.reserve': { auth: 'user', perm: 'docs', fn: reqs.docReserve },
   'doc.file': { auth: 'user', perm: 'docs', big: true, fn: reqs.docFile },
   'doc.download': { auth: 'user', fn: reqs.docDownload },
+  'sig.check': { auth: 'user', fn: reqs.sigCheck },
+  'sig.protocol': { auth: 'user', perm: 'docs', fn: reqs.sigProtocol },
   'kep.challenge': { auth: 'public', fn: kep.kepChallenge },
   'kep.login': { auth: 'public', fn: kep.kepLogin },
   'kep.linkChallenge': { auth: 'user', fn: kep.kepLinkChallenge },

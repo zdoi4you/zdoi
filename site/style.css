@@ -515,3 +515,7 @@ body.sys-guard.shield::after { content: "Скрито – върнете се в
 }
 .nowrap { white-space: nowrap; }
 tr.muted td { color: var(--muted); }
+.attach-item { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.sig-pill { border: 0; cursor: pointer; font: inherit; font-size: 12px; }
+.sig-card { padding: 12px 14px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }

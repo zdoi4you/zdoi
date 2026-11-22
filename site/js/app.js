@@ -2373,7 +2373,7 @@ async function requestView(regNo) {
       x.payload._sig ? [h('br'), h('span', { class: 'pill ok', title: 'Издател: ' + x.payload._sig.issuer + (x.payload._sig.qualified ? ' · квалифициран' : '') + ' · ' + fmtTime(x.payload._sig.at) + (x.payload._sig.rev ? ' · регистър: ' + (x.payload._sig.rev.status === 'good' ? 'валидно (' + x.payload._sig.rev.method + ')' : 'не е проверено') : '') }, '✍ КЕП: ' + x.payload._sig.name)] : null),
     h('td', null, h('div', { class: 'actions' },
       h('button', { class: 'btn sm', onclick: () => regenerate(x) }, 'PDF'),
-      may('docs') && !x.sentAt && !x.payload._sig ? h('button', { class: 'btn sm', onclick: () => x.kind === 'Съдебен документ' ? courtDocDialog({ payload: x.payload, existing: x, regNo: r.regNo, reload }) : docEditor(d, x.kind, x) }, 'Редактирай') : null,
+      may('docs') && !x.sentAt && !x.payload._sig && x.kind !== PROTOCOL_KIND ? h('button', { class: 'btn sm', onclick: () => x.kind === 'Съдебен документ' ? courtDocDialog({ payload: x.payload, existing: x, regNo: r.regNo, reload }) : docEditor(d, x.kind, x) }, 'Редактирай') : null,
       may('sign') && !x.sentAt && !x.payload._sig && x.fileId && x.kind !== 'Досие' ? h('button', { class: 'btn sm', onclick: () => kepSign(d, x) }, '✍ Подпиши с КЕП') : null,
       may('mailSend') && x.fileId ? h('button', { class: 'btn sm primary', onclick: () => composeDialog(d, { docs: [x.outNo] }) }, 'Изпрати по имейл') : null,
       may('mailRecord') && x.fileId ? h('button', { class: 'btn sm', title: 'Подаване от профила на ' + org.name + ' в ССЕВ (edelivery.egov.bg)', onclick: () => ssevDialog(d, x) }, 'Подай през ССЕВ') : null,
@@ -2382,7 +2382,7 @@ async function requestView(regNo) {
     try {
       // подписаният файл се сваля такъв, какъвто е – новото генериране би премахнало подписа
       if (x.payload._sig) { const f = await api('doc.download', { outNo: x.outNo }); return downloadB64(x.outNo + ' ' + x.kind + ' (подписан).pdf', f.data, 'application/pdf'); }
-      const p = Object.assign({}, x.payload, { outNo: x.outNo, date: x.date });
+      const p = Object.assign({ org: d.person || boot.org }, x.payload, { outNo: x.outNo, date: x.date });
       await Docs.open(Docs.DEFS[x.kind](p), x.outNo + ' ' + x.kind + '.pdf');
     } catch (e) { toast(e.message); }
   };
@@ -2403,7 +2403,8 @@ async function requestView(regNo) {
         whenOf(m.at), ' · ', m.direction === 'Входяща' ? 'от ' + m.from : 'до ' + m.to, m.ref ? ' · ' + m.ref : '', m.docOutNo ? ' · ' + m.docOutNo : '', m.matched ? ' · разпределено: ' + m.matched : ''),
       h('div', null, h('b', null, m.subject || '(без тема)')),
       h('details', null, h('summary', { class: 'small' }, 'Текст'), h('div', { class: 'pre small' }, m.body)),
-      m.attachments.length ? h('div', { class: 'attach-chips' }, m.attachments.map((a, i) => a.fileId ? h('button', { class: 'btn sm', onclick: async () => { try { const f = await api('mail.attachment', { id: m._id, index: i }); downloadB64(f.name, f.data, f.contentType); } catch (e) { toast(e.message); } } }, '📎 ' + a.name) : h('span', { class: 'small muted' }, '📎 ' + a.name + (a.skipped ? ' (' + a.skipped + ')' : '')))) : null,
+      m.attachments.length ? h('div', { class: 'attach-chips' }, m.attachments.map((a, i) => a.fileId ? h('span', { class: 'attach-item' }, h('button', { class: 'btn sm', onclick: async () => { try { const f = await api('mail.attachment', { id: m._id, index: i }); downloadB64(f.name, f.data, f.contentType); } catch (e) { toast(e.message); } } }, '📎 ' + a.name),
+        sigBadge(a, () => sigDialog(m, i, d, reload))) : h('span', { class: 'small muted' }, '📎 ' + a.name + (a.skipped ? ' (' + a.skipped + ')' : '')))) : null,
       may('mailSend') && m.direction === 'Входяща' && (!m.channel || m.channel === 'Имейл') ? h('div', { class: 'actions mt-8' }, h('button', { class: 'btn sm', onclick: () => composeDialog(d, { reply: m }) }, 'Отговори')) : null,
       may('mailSend') && (m.direction === 'Насрочена' || m.direction === 'Неизпратена') ? h('div', { class: 'actions mt-8' }, h('button', { class: 'btn sm danger', onclick: async () => {
         if (!confirm(m.direction === 'Насрочена' ? 'Да се отмени ли насроченото писмо?' : 'Да се премахне ли неизпратеното писмо?')) return;
@@ -2417,6 +2418,8 @@ async function requestView(regNo) {
     h('ul', { class: 'timeline' }, d.events.map(e => h('li', null, h('div', { class: 'small muted' }, fmtTime(e.at) + ' · ' + userName(e.user) + ' · ' + e.kind), h('div', { class: 'pre' }, e.text)))));
 
   const ent = r.entity, ap = r.applicant;
+  // получените PDF без проверка на подписите – проверяват се автоматично (резултатът се пази към файла)
+  autoSigCheck(d.mail, reload);
   setView(
     head(r.regNo + (locked ? ' 🔒' : ''), reqPill(r.status),
       edit ? h('a', { class: 'btn', href: '#/request/' + encodeURIComponent(r.regNo) + '/edit' }, 'Редактирай искането') : null,
@@ -2626,7 +2629,7 @@ async function kepSign(d, x) {
       body.append(step);
       try {
         step.textContent = 'Генериране на документа с печата…';
-        const p = Object.assign({}, x.payload, { outNo: x.outNo, date: x.date, kep: { name: c.name + (c.org ? ', ' + c.org : ''), issuer: c.issuerName, at: new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Sofia' }).replace(' ', 'T') } });
+        const p = Object.assign({ org: d.person || boot.org }, x.payload, { outNo: x.outNo, date: x.date, kep: { name: c.name + (c.org ? ', ' + c.org : ''), issuer: c.issuerName, at: new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Sofia' }).replace(' ', 'T') } });
         const pdfBytes = new Uint8Array(await (await Docs.blobOf(Docs.DEFS[x.kind](p))).arrayBuffer());
         const signed = await Kep.signPdf({
           port: biss.port, signer, pdfBytes, outNo: x.outNo, onStep: t => { step.textContent = t; },
@@ -2997,7 +3000,8 @@ async function mailInboxView() {
           h('div', { class: 'small muted' }, fmtTime(m.at) + ' · от ' + m.from + ' · до ' + m.to + (boxes && boxes.length > 1 && m.box ? ' · кутия ' + m.box : '')),
           h('b', null, m.subject || '(без тема)'),
           h('details', null, h('summary', { class: 'small' }, 'Текст'), h('div', { class: 'pre small' }, m.body)),
-          m.attachments.length ? h('div', { class: 'attach-chips' }, m.attachments.map((a, i) => a.fileId ? h('button', { class: 'btn sm', onclick: async () => { try { const f = await api('mail.attachment', { id: m._id, index: i }); downloadB64(f.name, f.data, f.contentType); } catch (e) { toast(e.message); } } }, '📎 ' + a.name) : h('span', { class: 'small muted' }, '📎 ' + a.name))) : null,
+          m.attachments.length ? h('div', { class: 'attach-chips' }, m.attachments.map((a, i) => a.fileId ? h('span', { class: 'attach-item' }, h('button', { class: 'btn sm', onclick: async () => { try { const f = await api('mail.attachment', { id: m._id, index: i }); downloadB64(f.name, f.data, f.contentType); } catch (e) { toast(e.message); } } }, '📎 ' + a.name),
+            sigBadge(a, () => sigDialog(m, i, null, null))) : h('span', { class: 'small muted' }, '📎 ' + a.name))) : null,
           can('mailbox') ? h('div', { class: 'filters m-0' }, input, h('button', { class: 'btn primary', onclick: async () => { try { await api('mail.assign', { id: m._id, regNo: input.value.trim() }); toast('Разпределено.'); mailInboxView(); } catch (e) { toast(e.message); } } }, 'Разпредели')) : null);
       })) : h('div', { class: 'card' }, h('p', { class: 'empty' }, 'Няма неразпределени писма.')));
   } catch (e) { failView(e); }
@@ -3556,6 +3560,109 @@ async function ticketPage(no) {
             ['Подаден', fmtTime(t.createdAt)], ['Отговорник', t.assignee ? userName(t.assignee) : '—'], ['Последна промяна', fmtTime(t.updatedAt)], t.closedAt ? ['Решен/затворен', fmtTime(t.closedAt)] : null])),
           manage)));
   } catch (e) { failView(e); }
+}
+
+
+/* ---------- проверка на подписите в получените документи (eIDAS, ЗЕДЕУУ) ---------- */
+
+const PROTOCOL_KIND = 'Протокол за проверка на подпис';
+const isPdfAtt = a => /pdf/i.test(a.contentType || '') || /\.pdf$/i.test(a.name || '');
+const SIG_IND = { 'TOTAL-PASSED': 'потвърден', 'TOTAL-FAILED': 'невалиден', INDETERMINATE: 'неопределен', NO_SIGNATURE: 'без подпис' };
+const SIG_SUB = {
+  HASH_FAILURE: 'съдържанието е променено след подписването', SIG_CRYPTO_FAILURE: 'подписът не съответства на ключа', REVOKED: 'удостоверението е прекратено/спряно преди подписа',
+  REVOKED_NO_POE: 'прекратено след подписа, но без удостоверение за време', OUT_OF_BOUNDS_NO_POE: 'удостоверението не е било валидно към декларираното време', EXPIRED: 'удостоверението е изтекло',
+  NO_CERTIFICATE_CHAIN_FOUND: 'издателят не е в доверителен списък', REVOCATION_UNKNOWN: 'статусът при доставчика не може да се провери', NO_SIGNING_CERTIFICATE_FOUND: 'липсва удостоверението на подписващия'
+};
+const sigWhen = iso => (iso ? new Date(iso).toLocaleString('bg-BG', { timeZone: 'Europe/Sofia', dateStyle: 'short', timeStyle: 'medium' }) : '—');
+const yesNo = v => (v ? 'да' : 'не');
+
+/* отметката до прикачения PDF: резултатът от последната проверка */
+function sigBadge(a, onClick) {
+  if (!isPdfAtt(a) || !a.fileId) return null;
+  const x = a.sig;
+  if (!x) return h('button', { type: 'button', class: 'btn sm', title: 'Проверка на електронните подписи (eIDAS, ЗЕДЕУУ)', onclick: onClick }, 'Провери подписа');
+  const cls = x.overall === 'TOTAL-PASSED' ? 'ok' : x.overall === 'TOTAL-FAILED' ? 'bad' : x.overall === 'NO_SIGNATURE' ? '' : 'warn';
+  const label = x.overall === 'TOTAL-PASSED' ? (x.qes ? '✔ КЕП' + (x.qes > 1 ? ' ×' + x.qes : '') : '✔ подпис') : x.overall === 'TOTAL-FAILED' ? '✖ невалиден подпис' : x.overall === 'NO_SIGNATURE' ? 'без подпис' : '⚠ неопределен';
+  return h('button', { type: 'button', class: 'pill ' + cls + ' sig-pill', title: (x.signers || []).join('; ') + ' · проверено ' + sigWhen(x.at) + ' – отвори техническите данни', onclick: onClick }, label);
+}
+
+function certKv(c, label) {
+  return kv([
+    [label, c.subject], ['Издател', c.issuer], ['Сериен номер', h('span', { class: 'mono small' }, c.serial)], ['SHA-256', h('span', { class: 'mono small' }, c.sha256)],
+    ['Валидност', sigWhen(c.notBefore) + ' – ' + sigWhen(c.notAfter)], ['Ключ / подпис', c.key + ' / ' + c.sigAlg],
+    c.keyUsage && c.keyUsage.length ? ['Предназначение', c.keyUsage.join(', ')] : null,
+    c.policies && c.policies.length ? ['Политики', c.policies.map(x => h('div', null, x))] : null,
+    c.qc ? ['QC декларации', [c.qc.compliance ? 'квалифицирано (QcCompliance)' : 'не е квалифицирано', c.qc.sscd ? 'ключ в QSCD (QcSSCD)' : 'без QcSSCD', c.qc.types.length ? c.qc.types.join(', ') : ''].filter(Boolean).join(' · ')] : null
+  ]);
+}
+
+/* докладът от проверката – обобщение и технически данни по подписи */
+function sigFullReport(rep) {
+  const sum = rep.summary, doc = rep.document;
+  const ovCls = sum.overall === 'TOTAL-PASSED' ? 'ok' : sum.overall === 'TOTAL-FAILED' ? 'bad' : sum.overall === 'NO_SIGNATURE' ? '' : 'warn';
+  return h('div', { class: 'stack' },
+    h('div', { class: 'head m-0' }, h('h3', { class: 'm-0' }, doc.name), h('span', { class: 'pill ' + ovCls }, 'Общ резултат: ' + (SIG_IND[sum.overall] || sum.overall))),
+    kv([['Размер', doc.size + ' байта'], ['SHA-256', h('span', { class: 'mono small' }, doc.sha256)], ['Подписи / печати за време', sum.count + ' / ' + sum.timestamps], ['Проверено', sigWhen(rep.checkedAt)]]),
+    (rep.legal || []).map(x => h('p', { class: 'small md-note m-0' }, x)),
+    rep.signatures.map((s, i) => h('section', { class: 'card stack sig-card' },
+      h('div', { class: 'head m-0' }, h('b', null, 'Подпис ' + (i + 1) + (s.kind === 'docTimestamp' ? ' – документен печат за време' : s.signer ? ' – ' + s.signer.name + (s.signer.org ? ', ' + s.signer.org : '') : '')),
+        h('span', { class: 'pill ' + (s.indication === 'TOTAL-PASSED' ? 'ok' : s.indication === 'TOTAL-FAILED' ? 'bad' : 'warn') }, SIG_IND[s.indication] || s.indication || 'грешка')),
+      s.error ? h('p', { class: 'err' }, s.error) : null,
+      s.kind === 'signature' ? h('p', { class: 'm-0' }, h('b', null, s.qualification), s.subIndication ? h('span', { class: 'small muted' }, ' – ' + (SIG_SUB[s.subIndication] || s.subIndication)) : null) : null,
+      s.kind === 'signature' ? kv([
+        ['Формат / ниво', s.level], ['Цялост / подпис', yesNo(s.checks.integrity) + ' / ' + yesNo(s.checks.signature)], ['Обхват', s.coversAll ? 'целият файл' : 'без последните ' + s.unsignedBytes + ' байта'],
+        ['Време на подписа', sigWhen(s.timeUsed) + ' (' + s.timeUsedSource + ')'], ['Валидно тогава / сега', yesNo(s.checks.validAtTime) + ' / ' + yesNo(s.checks.validNow)],
+        ['Доставчик (доверителен списък)', s.trust && s.trust.found ? s.trust.tsp + ' – ' + s.trust.type + ', ' + s.trust.statusAt + ' към момента на подписа (' + s.trust.tl.cc + ' TL № ' + s.trust.tl.seq + ')' : (s.trust && s.trust.error) || 'не е намерен'],
+        ['Прекратяване/спиране', s.revocation ? (s.revocation.status === 'good' ? 'валидно' : s.revocation.status === 'revoked' ? 'прекратено/спряно' + (s.revocation.revokedAt ? ' на ' + sigWhen(s.revocation.revokedAt) : '') : 'не е проверено') + (s.revocation.method ? ' (' + s.revocation.method + ')' : '') : '—'],
+        s.timestamp ? ['Удостоверение за време', s.timestamp.error ? 'грешка: ' + s.timestamp.error : sigWhen(s.timestamp.time) + (s.timestamp.tsa ? ' · ' + s.timestamp.tsa.name : '') + (s.timestamp.qualified ? ' · квалифицирано' : '')] : null
+      ]) : kv([['Време', s.timestamp ? sigWhen(s.timestamp.time) : '—'], ['Издател', s.timestamp && s.timestamp.tsa ? s.timestamp.tsa.subject : '—'], ['Вид', s.qualification]]),
+      (s.warnings || []).length ? h('ul', { class: 'small warn-text m-0' }, s.warnings.map(w => h('li', null, w))) : null,
+      s.signer ? h('details', null, h('summary', { class: 'small' }, 'Удостоверения и всички технически данни'),
+        h('div', { class: 'stack mt-8' }, certKv(s.signer, 'Подписващ'), (s.chain || []).map(c => certKv(c, 'Издател (' + c.role + ')')),
+          kv([['ByteRange', (s.byteRange || []).join(' ')], ['SHA-256 на подписаните байтове', h('span', { class: 'mono small' }, (s.signedSha256 || '').toUpperCase())], ['Алгоритми', s.digestAlg + ' / ' + s.sigAlg],
+            ['Декларирано време', s.claimedTime ? sigWhen(s.claimedTime) + ' (' + s.claimedSource + ')' : '—'], s.reason ? ['Основание', s.reason] : null,
+            s.revocation && s.revocation.url ? ['Адрес на OCSP/CRL', h('span', { class: 'mono small' }, s.revocation.url)] : null,
+            s.trust && s.trust.found ? ['Доверителен списък', h('span', { class: 'mono small' }, s.trust.tl.url)] : null]))) : null)),
+    h('details', null, h('summary', { class: 'small' }, 'Методика и правно основание'), (rep.method || []).map(x => h('p', { class: 'small' }, x))));
+}
+
+/* прозорецът с проверката; d – данните на преписката (за протокола) */
+async function sigDialog(m, i, d, reload) {
+  const box = h('div', { class: 'stack' }, h('p', { class: 'loading' }, 'Проверка на подписите: цялост, удостоверения, доверителен списък на ЕС, OCSP/CRL…'));
+  const actions = h('div', { class: 'actions mt-12' }, h('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, 'Затвори'));
+  const dlg = dialog('Проверка на електронните подписи – ' + (m.attachments[i] || {}).name, h('div', null, box, actions), { wide: true });
+  try {
+    const r = await api('sig.check', { id: m._id, index: i });
+    box.replaceChildren(sigFullReport(r.report));
+    const canProto = d && m.regNo && r.report.summary.count && can('docs') && d.request && d.request.locked !== 'Да';
+    if (canProto) actions.prepend(h('button', { type: 'button', class: 'btn primary', title: 'Документ по преписката с Изх. №, подписан с вашия КЕП – доказателство по делото', onclick: async e => {
+      e.target.disabled = true;
+      try { dlg.close(); await sigProtocol(m, i, d, reload); } catch (ex) { toast(ex.message); }
+    } }, can('sign') ? 'Протокол за съда (подпис с КЕП)' : 'Протокол за съда'));
+    if (reload) dlg.addEventListener('close', () => reload());
+  } catch (e) { box.replaceChildren(h('p', { class: 'err' }, e.message)); }
+}
+
+/* протоколът: сървърът проверява наново и записва данните; PDF се генерира, качва и подписва с КЕП на служителя */
+async function sigProtocol(m, i, d, reload) {
+  toast('Изготвяне на протокола…');
+  const res = await api('sig.protocol', { id: m._id, index: i });
+  const x = { outNo: res.outNo, date: res.date, kind: PROTOCOL_KIND, payload: res.payload };
+  const p = Object.assign({ org: d.person || boot.org }, res.payload, { outNo: res.outNo, date: res.date });
+  await api('doc.file', { outNo: res.outNo, pdf: await Docs.base64Of(Docs.DEFS[PROTOCOL_KIND](p)) });
+  if (can('sign')) return kepSign(d, Object.assign(x, { fileId: 'ok' }));
+  toast('Протоколът е създаден (изх. № ' + res.outNo + '). Подписва се с КЕП от служител с право за подпис.');
+  if (reload) reload();
+}
+
+/* автоматична проверка на получените PDF без резултат – по една, след като се отвори преписката */
+const sigTried = new Set();
+async function autoSigCheck(mails, reload) {
+  const todo = [];
+  mails.forEach(m => { if (m.direction === 'Входяща') (m.attachments || []).forEach((a, i) => { const k = m._id + ':' + i; if (isPdfAtt(a) && a.fileId && !a.sig && !sigTried.has(k)) { sigTried.add(k); todo.push([m, i]); } }); });
+  let done = 0;
+  for (const [m, i] of todo.slice(0, 6)) { try { await api('sig.check', { id: m._id, index: i }); done++; } catch (_) { /* следващия път */ } }
+  if (done && reload) reload();
 }
 
 /* ---------- маршрути ---------- */
