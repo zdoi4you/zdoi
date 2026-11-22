@@ -331,7 +331,7 @@ const NAV = () => [
     ['#/addressees', 'Адресати', 'contacts', true],
     ['#/departments', 'Отдели', 'org', true],
     ['#/calc', 'Калкулатор на срокове', 'calc', true],
-    ['#/verify', 'Проверка на ЕИК/БУЛСТАТ', 'search', true],
+    ['#/verify', 'Проверки в регистрите', 'search', true],
     ['#/kep', 'Проверка на КЕП', 'key', true]
   ]],
   ['Администрация', [
@@ -1895,6 +1895,14 @@ const REGISTRY_BULSTAT = 'https://reports.bulstat.bg/bulstat-ireports/report.jsf
 const capital = t => t.charAt(0).toUpperCase() + t.slice(1);
 
 /* полетата на страна (адресат, заявител, субект) с представка: етикетът на ЕИК/БУЛСТАТ следва регистрацията, а адресът има избор от списък */
+/* организации с ролите на лицето в тях (Търговски регистър и регистър на ЮЛНЦ) */
+function orgList(orgs) {
+  return orgs.length ? h('ul', { class: 'list-plain' }, orgs.map(o => h('li', null,
+    h('span', null, h('a', { href: o.link, target: '_blank', rel: 'noopener noreferrer' }, o.name), o.flag ? h('span', { class: 'pill bad ml-4' }, o.flag) : null, h('br'),
+      h('span', { class: 'small muted' }, o.roles.join(' · '))),
+    h('a', { class: 'btn sm', href: '#/verify?eik=' + o.uic, title: 'Проверка на организацията' }, o.uic)))) : h('p', { class: 'empty' }, 'Няма участия.');
+}
+
 /* резултатът от проверката в Търговския регистър и регистър БУЛСТАТ */
 function verifyResult(r) {
   const card = (title, x, body) => h('section', { class: 'card stack verify-card' },
@@ -1910,6 +1918,9 @@ function verifyResult(r) {
         ['Представители и органи', lines(c.representatives)], ['Начин на представляване', c.representation], ['Едноличен собственик', c.owner], ['Особени обстоятелства', (c.flags || []).join('; ')]])),
       card('Регистър БУЛСТАТ', b, kv([['Наименование', b.name], ['Правна форма', b.legalForm], ['Състояние', b.state], ['Адрес', b.address], ['Комуникации', b.contacts],
         ['Управление', b.management], ['Принадлежност', b.parent], ['Собственост', b.owners], ['Дейност', b.activity]]))),
+    r.participation ? h('section', { class: 'card stack' }, h('h2', null, 'Участие в други организации (' + r.participation.length + ')'),
+      h('p', { class: 'small muted' }, 'Дружества и сдружения, в които организацията е собственик, съдружник, член на органите на управление или контрол – по Търговския регистър и регистъра на ЮЛНЦ.'),
+      r.participationError ? h('p', { class: 'warn-text small' }, r.participationError) : orgList(r.participation)) : null,
     h('p', { class: 'small muted' }, 'Проверено ' + fmtTime(r.at) + (r.cached ? ' (от последните 12 часа)' : '') + '. Източници: Агенция по вписванията и регистър БУЛСТАТ.'));
 }
 
@@ -1931,10 +1942,43 @@ async function verifyDialog(eik, fill) {
   } catch (e) { box.replaceChildren(h('p', { class: 'err' }, e.message)); }
 }
 
-/* страница „Проверка на ЕИК/БУЛСТАТ“ */
+/* страница „Проверки в регистрите“: организация по ЕИК/БУЛСТАТ или физическо лице по име и ЕГН */
 function verifyView(query) {
-  const input = h('input', { type: 'text', inputmode: 'numeric', maxlength: 13, placeholder: 'ЕИК или код по БУЛСТАТ (9 или 13 цифри)', 'aria-label': 'ЕИК/БУЛСТАТ', value: new URLSearchParams(query || '').get('eik') || '' });
+  const q = new URLSearchParams(query || '');
+  const mode = q.get('mode') === 'person' ? 'person' : 'org';
+  const tabs = h('div', { class: 'seg mb-12' }, [['org', 'Организация (ЕИК/БУЛСТАТ)'], ['person', 'Физическо лице (име, ЕГН)']].map(([k, label]) =>
+    h('button', { class: 'btn sm' + (k === mode ? ' primary' : ''), onclick: () => { location.hash = '#/verify' + (k === 'person' ? '?mode=person' : ''); } }, label)));
   const out = h('div');
+  if (mode === 'person') {
+    const name = h('input', { type: 'text', maxlength: 120, placeholder: 'Име (поне собствено и фамилно)', 'aria-label': 'Име', autocomplete: 'off' });
+    const egn = h('input', { type: 'password', inputmode: 'numeric', maxlength: 10, placeholder: 'ЕГН (по желание)', 'aria-label': 'ЕГН', autocomplete: 'off' });
+    const hist = h('input', { type: 'checkbox' });
+    const run = async () => {
+      out.replaceChildren(h('p', { class: 'loading' }, 'Търсене в Търговския регистър, регистъра на ЮЛНЦ' + (egn.value ? ' и регистър БУЛСТАТ' : '') + '…'));
+      try {
+        const r = await api('verify.person', { name: name.value, egn: egn.value, history: hist.checked });
+        const b = r.bulstat;
+        out.replaceChildren(h('div', { class: 'stack' },
+          r.crError ? h('p', { class: 'warnbox' }, r.crError) : null,
+          h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Търговски регистър и регистър на ЮЛНЦ'), h('span', { class: 'pill' }, r.total + ' съвпадения')),
+            r.total > r.shown ? h('p', { class: 'small muted' }, 'Показани са първите ' + r.shown + ' – уточнете името или въведете ЕГН.') : null,
+            r.people.length ? r.people.map(x => h('div', { class: 'stack person-hit' }, h('b', null, x.name), x.error ? h('p', { class: 'warn-text small' }, x.error) : orgList(x.orgs)))
+              : h('p', { class: 'empty' }, 'Няма вписано лице с тези данни.')),
+          b ? h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Регистър БУЛСТАТ (по ЕГН)'), h('span', { class: 'pill ' + (b.found ? 'ok' : '') }, b.found ? (b.state || 'вписано') : 'няма запис')),
+            b.error ? h('p', { class: 'warn-text small' }, b.error) : b.found ? kv([['Наименование', b.name], ['Правна форма', b.legalForm], ['Състояние', b.state], ['Адрес', b.address], ['Дейност', b.activity]])
+              : h('p', { class: 'muted small' }, 'Лицето не е вписано самостоятелно в регистър БУЛСТАТ (напр. като свободна професия или занаятчия).')) : null,
+          h('p', { class: 'small muted' }, 'Проверено ' + fmtTime(r.at) + (r.history ? ', включително заличените обстоятелства' : '') + '. ЕГН се изпраща само към регистрите и не се записва в системата.')));
+      } catch (e) { out.replaceChildren(h('p', { class: 'err' }, e.message)); }
+    };
+    [name, egn].forEach(x => x.addEventListener('keydown', e => { if (e.key === 'Enter') run(); }));
+    setView(head('Проверки в регистрите'), tabs,
+      h('p', { class: 'small muted mb-12' }, 'В кои дружества и сдружения участва лицето – като управител, представител, съдружник, едноличен собственик, член на органите (Търговски регистър и регистър на ЮЛНЦ), и дали е вписано в регистър БУЛСТАТ (по ЕГН). Търсенето по име може да върне съименници – ЕГН ги разграничава.'),
+      h('div', { class: 'card stack mb-16' }, h('div', { class: 'filters m-0' }, name, egn, h('button', { class: 'btn primary', onclick: run }, 'Търси')),
+        h('label', { class: 'check' }, hist, h('span', null, 'Включи и минали участия (заличени обстоятелства)'))),
+      out);
+    return;
+  }
+  const input = h('input', { type: 'text', inputmode: 'numeric', maxlength: 13, placeholder: 'ЕИК или код по БУЛСТАТ (9 или 13 цифри)', 'aria-label': 'ЕИК/БУЛСТАТ', value: q.get('eik') || '' });
   const run = async fresh => {
     const eik = input.value.replace(/\D/g, '');
     if (!/^(\d{9}|\d{13})$/.test(eik)) return toast('Въведете 9 или 13 цифри.');
@@ -1943,8 +1987,8 @@ function verifyView(query) {
     try { out.replaceChildren(verifyResult(await api('verify.eik', { eik, fresh: !!fresh }))); } catch (e) { out.replaceChildren(h('p', { class: 'err' }, e.message)); }
   };
   input.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
-  setView(head('Проверка на ЕИК/БУЛСТАТ'),
-    h('p', { class: 'small muted mb-12' }, 'Актуално състояние в Търговския регистър и регистъра на ЮЛНЦ (Агенция по вписванията) и в регистър БУЛСТАТ: наименование, правна форма, седалище и адрес, имейл, представители, състояние (вписан, заличен, в ликвидация, несъстоятелност), принадлежност.'),
+  setView(head('Проверки в регистрите'), tabs,
+    h('p', { class: 'small muted mb-12' }, 'Актуално състояние в Търговския регистър и регистъра на ЮЛНЦ (Агенция по вписванията) и в регистър БУЛСТАТ: наименование, правна форма, седалище и адрес, имейл, представители, състояние (вписан, заличен, в ликвидация, несъстоятелност), принадлежност и участие в други организации.'),
     h('div', { class: 'card stack mb-16' }, h('div', { class: 'filters m-0' }, input, h('button', { class: 'btn primary', onclick: () => run() }, 'Провери'), h('button', { class: 'btn', title: 'Без запомнения резултат', onclick: () => run(true) }, 'Провери наново'))),
     out);
   if (input.value) run();

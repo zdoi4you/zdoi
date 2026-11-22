@@ -423,3 +423,4 @@ tr.canceled td:last-child, tr.canceled td:nth-child(4) { text-decoration: none; 
 .logo-empty { border: 1px dashed var(--line); border-radius: 10px; padding: 18px 14px; }
 .verify-btn { align-self: flex-start; margin-top: 4px; }
 .verify-card .kv dd div + div { margin-top: 2px; }
+.person-hit + .person-hit { border-top: 1px solid var(--line); padding-top: 10px; }

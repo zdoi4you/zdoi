@@ -55,3 +55,43 @@ test('проверка по ЕИК: Търговски регистър (акт�
   assert.ok(n.warnings.some(w => /нито в Търговския регистър/.test(w)));
   assert.equal((await admin.call('verify.eik', { eik: '12' })).error, 'value');
 });
+
+test('участие в организации: физическо лице по име и ЕГН (ТР/ЮЛНЦ и БУЛСТАТ), организация по ЕИК; ЕГН не се записва', async () => {
+  const { env, admin } = await ready();
+  const calls = [];
+  env.__cr = async url => {
+    calls.push(url);
+    const u = new URL(url);
+    if (u.pathname.includes('/labels/')) return new Response(JSON.stringify({ CR_F_10_L: '10. Представители', CR_F_23_L: '23. Едноличен собственик на капитала', CR_APP_IN_LIQUIDATION_L: 'в ликвидация' }));
+    if (u.pathname.endsWith('/Subjects')) return new Response(u.searchParams.get('name') || u.searchParams.get('ident') ? JSON.stringify([{ isPhysical: true, ident: 'TOKEN1', name: 'ИВАН ПЕТРОВ ИВАНОВ' }]) : '');
+    if (u.pathname.endsWith('/SubjectInFields')) {
+      if (u.searchParams.get('type') === '1') return new Response(JSON.stringify([{ companyFullName: '"АЛФА" ЕООД', uic: '111111111', fieldName: 'CR_F_10_L' }, { companyFullName: '"АЛФА" ЕООД', uic: '111111111', fieldName: 'CR_F_23_L' }, { companyFullName: 'Сдружение "Бета"', uic: '222222222', fieldName: 'CR_F_10_L', companyNameSuffixFlag: 'CR_APP_IN_LIQUIDATION_L' }]));
+      return new Response(JSON.stringify([{ companyFullName: 'ДКК ЕАД', uic: '121031861', fieldName: 'CR_F_2_L' }, { companyFullName: '"ГАМА" ЕАД', uic: '333333333', fieldName: 'CR_F_23_L' }]));
+    }
+    return new Response('');
+  };
+  env.__bulstat = async () => new Response('<html>ReportServiceException</html>');
+  const p = await admin.call('verify.person', { name: 'Иван Петров Иванов', egn: '7501010004' });
+  assert.equal(p.ok, true, JSON.stringify(p));
+  assert.equal(p.people.length, 1);
+  const alfa = p.people[0].orgs.find(o => o.uic === '111111111');
+  assert.deepEqual(alfa.roles, ['Представители', 'Едноличен собственик на капитала']);
+  assert.equal(p.people[0].orgs.find(o => o.uic === '222222222').flag, 'в ликвидация');
+  assert.equal(p.bulstat.found, false);
+  assert.ok(calls.some(c => c.includes('ident=7501010004')));
+  // ЕГН не остава в KV и в дневника
+  const kv = JSON.stringify([...env.__kv.m.entries()]);
+  assert.ok(kv.length > 10);
+  assert.ok(!kv.includes('7501010004'));
+  const log = (await admin.call('log.list')).log;
+  assert.ok(log.some(l => /участие на физическо лице/.test(l.action) && /75\*{8}/.test(l.details)));
+  assert.ok(!JSON.stringify(log).includes('7501010004'));
+  // невалидни входни данни
+  assert.equal((await admin.call('verify.person', { egn: '7501010005' })).error, 'value');
+  assert.equal((await admin.call('verify.person', { name: 'Иван' })).error, 'value');
+  assert.equal((await admin.call('verify.person', {})).error, 'required');
+  // организация: участие в други (без самата нея)
+  const o = await admin.call('verify.eik', { eik: '121031861', fresh: true });
+  assert.deepEqual(o.participation.map(x => x.uic), ['333333333']);
+  assert.deepEqual(o.participation[0].roles, ['Едноличен собственик на капитала']);
+});

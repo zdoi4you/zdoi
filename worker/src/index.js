@@ -72,6 +72,7 @@ export const ACTIONS = {
   'addressee.save': { auth: 'user', perm: 'addressees', fn: cases.addresseeSave },
   'registry.search': { auth: 'user', fn: registry.registrySearch },
   'verify.eik': { auth: 'user', fn: verify.verifyEik },
+  'verify.person': { auth: 'user', fn: verify.verifyPerson },
   'registry.refresh': { auth: 'user', perm: 'addressees', fn: registry.registryRefresh },
   'registry.import': { auth: 'user', perm: 'addressees', fn: registry.registryImport },
   'registry.monImport': { auth: 'user', perm: 'addressees', big: true, fn: registry.registryMonImport },

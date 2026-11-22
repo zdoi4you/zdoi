@@ -8,6 +8,7 @@
  */
 
 import { fail, str, stamp, fetchRetry } from './util.js';
+import { audit } from './core.js';
 
 const UA = 'ADM-ZDOI4You/1.0 (+https://adm.zdoi.eu)';
 const CR = 'https://portal.registryagency.bg';
@@ -26,7 +27,7 @@ async function crLabels(app) {
   const hit = await app.kv.get('c:crlabels');
   if (hit) return JSON.parse(hit);
   const f = app.env.__cr || fetch;
-  const r = await fetchRetry(f, CR + '/Api/nomenclatures/labels/bg?prefixes=CR_F_', { headers: { 'User-Agent': UA, Accept: 'application/json', 'Accept-Language': 'bg' } }, 'Търговският регистър (portal.registryagency.bg)', app.env.__cr ? [] : undefined);
+  const r = await fetchRetry(f, CR + '/Api/nomenclatures/labels/bg?prefixes=CR_F_,CR_APP_IN', { headers: { 'User-Agent': UA, Accept: 'application/json', 'Accept-Language': 'bg' } }, 'Търговският регистър (portal.registryagency.bg)', app.env.__cr ? [] : undefined);
   const j = await r.json().catch(() => ({}));
   await app.kv.put('c:crlabels', JSON.stringify(j), { expirationTtl: 30 * 86400 });
   return j;
@@ -109,6 +110,87 @@ export async function checkBulstat(app, eik) {
   return Object.assign(parseBulstat(await r.text()), { link: bulstatLink(eik) });
 }
 
+/* ---------- участие в организации (справка „Проверка на лице/организация“ на Агенцията по вписванията) ---------- */
+
+/*
+ * GET /CR/api/Deeds/Subjects?name&ident(ЕГН)&selectedSearchFilter=0  – физически лица (кодиран идентификатор)
+ * GET /CR/api/Deeds/Summary?name&ident(ЕИК)&selectedSearchFilter=1   – юридически лица
+ * GET /CR/api/Deeds/SubjectInFields?uid&name&searchInHistory&type     – партидите и полетата, в които лицето е вписано
+ * Обхваща Търговския регистър и регистъра на ЮЛНЦ. ЕГН се ползва само за заявката – не се пази в кеша и в дневника.
+ */
+async function crGet(app, path) {
+  const f = app.env.__cr || fetch;
+  const r = await fetchRetry(f, CR + '/CR/api/Deeds/' + path, { headers: { 'User-Agent': UA, Accept: 'application/json', 'Accept-Language': 'bg' } },
+    'Търговският регистър (portal.registryagency.bg)', app.env.__cr ? [] : undefined);
+  const body = await r.text();
+  if (!body.trim()) return [];
+  try { return JSON.parse(body); } catch (_) { fail('external', 'Търговският регистър върна неочакван отговор.'); }
+}
+const qs = o => Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+
+/* партидите, в които субектът участва, групирани по дружество/организация */
+async function participation(app, uid, name, physical, history) {
+  const labels = await crLabels(app).catch(() => ({}));
+  const rows = await crGet(app, 'SubjectInFields?' + qs({ uid, name: physical ? name : '', searchInHistory: history ? 'true' : 'false', type: physical ? 1 : 0 }));
+  const map = new Map();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r.uic) continue;
+    const o = map.get(r.uic) || { uic: r.uic, name: t(r.companyFullName), roles: [], flag: '', link: crLink(r.uic) };
+    const role = String(labels[r.fieldName] || r.fieldName || '').replace(/^\d+[а-я]?\.\s*/, '');
+    if (role && !o.roles.includes(role)) o.roles.push(role);
+    if (r.companyNameSuffixFlag) o.flag = labels[r.companyNameSuffixFlag] || (/LIQUIDATION/.test(r.companyNameSuffixFlag) ? 'в ликвидация' : /BANKRUPT|INSOLV/.test(r.companyNameSuffixFlag) ? 'в несъстоятелност' : r.companyNameSuffixFlag);
+    map.set(r.uic, o);
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'bg'));
+}
+
+/* ЕГН: 10 цифри, валидна дата и контролна цифра */
+export function egnValid(egn) {
+  if (!/^\d{10}$/.test(egn)) return false;
+  let y = Number(egn.slice(0, 2)), m = Number(egn.slice(2, 4));
+  const d = Number(egn.slice(4, 6));
+  if (m > 40) { m -= 40; y += 2000; } else if (m > 20) { m -= 20; y += 1800; } else y += 1900;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return false;
+  const w = [2, 4, 8, 5, 10, 9, 7, 3, 6];
+  const c = w.reduce((s, k, i) => s + k * Number(egn[i]), 0) % 11;
+  return (c === 10 ? 0 : c) === Number(egn[9]);
+}
+const t = v => String(v || '').replace(/\s+/g, ' ').trim();
+
+/* физическо лице: по име и/или ЕГН */
+export async function verifyPerson(d, ctx, app) {
+  const name = t(str(d.name, 120));
+  const egn = str(d.egn, 12).replace(/\D/g, '');
+  if (!name && !egn) fail('required', 'Въведете име или ЕГН.');
+  if (name && (!/^[А-Яа-яA-Za-z' -]+$/.test(name) || name.split(' ').length < 2)) fail('value', 'Въведете поне собствено и фамилно име (само букви).');
+  if (egn && !egnValid(egn)) fail('value', 'Невалидно ЕГН.');
+  const history = d.history === true;
+  const [subjects, bulstat] = await Promise.all([
+    crGet(app, 'Subjects?' + qs({ page: 1, pageSize: 20, name, ident: egn, includeHistory: history ? 'true' : 'false', selectedSearchFilter: 0 })).catch(e => ({ error: e.message })),
+    egn ? checkBulstat(app, egn).catch(e => ({ error: e.message })) : Promise.resolve(null)
+  ]);
+  let people = [];
+  if (Array.isArray(subjects)) {
+    // до 8 съвпадения по име – за всяко партидите, в които участва
+    for (const s of subjects.slice(0, 8)) {
+      try { people.push({ name: t(s.name), orgs: await participation(app, s.ident, s.name, true, history) }); } catch (e) { people.push({ name: t(s.name), error: e.message }); }
+    }
+  }
+  if (bulstat && bulstat.found) bulstat.link = ''; // справката по ЕГН не се отваря с връзка (би показала ЕГН в адреса)
+  await audit(app, ctx.username, 'Проверка на участие на физическо лице', '', (name || '—') + (egn ? ' · ЕГН ' + egn.slice(0, 2) + '********' : ''));
+  return {
+    at: stamp(), name, egnGiven: !!egn, history, total: Array.isArray(subjects) ? subjects.length : 0, shown: people.length,
+    people, crError: subjects && subjects.error ? subjects.error : '', bulstat: bulstat ? (bulstat.found ? bulstat : { found: false, error: bulstat.error }) : null
+  };
+}
+
+/* юридическо лице: в кои други организации участва (собственик, съдружник, член на органи) */
+export async function orgParticipation(app, eik, history) {
+  const orgs = await participation(app, eik, '', false, history);
+  return orgs.filter(o => o.uic !== eik);
+}
+
 /* ---------- действие ---------- */
 
 const safe = p => p.catch(e => ({ error: e.message }));
@@ -118,13 +200,13 @@ export async function verifyEik(d, ctx, app) {
   if (!/^(\d{9}|\d{13})$/.test(eik)) fail('value', 'Въведете ЕИК/БУЛСТАТ от 9 или 13 цифри.');
   const key = 'chk:' + eik;
   if (!d.fresh) { const hit = await app.kv.get(key); if (hit) return Object.assign(JSON.parse(hit), { cached: true }); }
-  const [cr, bulstat] = await Promise.all([safe(checkCR(app, eik)), safe(checkBulstat(app, eik))]);
+  const [cr, bulstat, part] = await Promise.all([safe(checkCR(app, eik)), safe(checkBulstat(app, eik)), safe(orgParticipation(app, eik, false))]);
   const warnings = [];
   if (cr.found && cr.closed) warnings.push('Партидата в Търговския регистър е заличена.');
   if (cr.found && cr.flags && cr.flags.length) warnings.push(...cr.flags.map(x => 'Търговски регистър – ' + x));
   if (bulstat.found && bulstat.state && !bulstat.active) warnings.push('Регистър БУЛСТАТ – състояние: ' + bulstat.state);
   if (!cr.found && !bulstat.found && !cr.error && !bulstat.error) warnings.push('Няма субект с този код нито в Търговския регистър, нито в регистър БУЛСТАТ.');
-  const res = { eik, at: stamp(), cr, bulstat, warnings };
+  const res = { eik, at: stamp(), cr, bulstat, warnings, participation: Array.isArray(part) ? part : [], participationError: part && part.error ? part.error : '' };
   if (!cr.error && !bulstat.error) await app.kv.put(key, JSON.stringify(res), { expirationTtl: 12 * 3600 });
   return res;
 }
