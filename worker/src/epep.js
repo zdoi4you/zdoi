@@ -13,6 +13,8 @@
  * и разрешение от съда – тя не се чете.
  */
 
+import { fail, fetchRetry } from './util.js';
+
 export const EPEP_BASE = 'https://ecase.justice.bg';
 const GID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 export const gidOf = v => { const m = GID_RE.exec(String(v || '')); return m ? m[1].toLowerCase() : ''; };
@@ -23,17 +25,13 @@ export const courtKey = s => String(s || '').toLowerCase().replace(/[‐-―−-
 
 async function post(env, path, data, size = 100) {
   const f = env.__epep || fetch;
-  let r;
-  try {
-    r = await f(EPEP_BASE + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'User-Agent': 'ADM-ZDOI4You/1.0 (+https://adm.zdoi.eu)' },
-      body: JSON.stringify({ data: JSON.stringify(data), page: 1, size })
-    });
-  } catch (e) { throw new Error('ЕПЕП не отговаря: ' + e.message); }
-  if (!r.ok) throw new Error('ЕПЕП отговори с код ' + r.status + '.');
+  const r = await fetchRetry(f, EPEP_BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache', 'User-Agent': 'ADM-ZDOI4You/1.0 (+https://adm.zdoi.eu)' },
+    body: JSON.stringify({ data: JSON.stringify(data), page: 1, size })
+  }, 'ЕПЕП (ecase.justice.bg)', env.__epep ? [] : undefined);
   let j;
-  try { j = await r.json(); } catch (_) { throw new Error('ЕПЕП върна неочакван отговор.'); }
+  try { j = await r.json(); } catch (_) { fail('external', 'ЕПЕП върна неочакван отговор.'); }
   return Array.isArray(j && j.data) ? j.data : [];
 }
 

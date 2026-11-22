@@ -7,7 +7,7 @@
  * Втори източник: училищата, детските градини и центровете от отворените данни на МОН (вж. по-долу).
  */
 
-import { fail, str, line, stamp, todayIso } from './util.js';
+import { fail, str, line, stamp, todayIso, fetchRetry } from './util.js';
 import { audit } from './core.js';
 import { REG_BASIS, DEFAULT_CODE, addresseePersons, setAddresseePersons, addresseeScope } from './persons.js';
 
@@ -17,13 +17,10 @@ const KEY = 'reg:iisda', META = 'reg:iisda:meta';
 
 async function call(env, method, body) {
   const f = env.__egov || fetch;
-  let r;
-  try {
-    r = await f(API + method, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'ADM-ZDOI4You/1.0 (+https://adm.zdoi.eu)' }, body: JSON.stringify(body) });
-  } catch (e) { throw new Error('Порталът за отворени данни не отговаря: ' + e.message); }
-  if (!r.ok) throw new Error('Порталът за отворени данни отговори с код ' + r.status + '.');
+  const r = await fetchRetry(f, API + method, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'ADM-ZDOI4You/1.0 (+https://adm.zdoi.eu)' }, body: JSON.stringify(body) },
+    'Порталът за отворени данни (data.egov.bg)', env.__egov ? [] : undefined);
   const j = await r.json().catch(() => null);
-  if (!j || j.success === false) throw new Error('Порталът за отворени данни върна грешка' + (j && j.error ? ': ' + (j.error.message || j.error) : '.'));
+  if (!j || j.success === false) fail('external', 'Порталът за отворени данни върна грешка' + (j && j.error ? ': ' + (j.error.message || j.error) : '.'));
   return j;
 }
 
@@ -120,12 +117,12 @@ export async function refreshRegistry(app, force, source = 'iisda') {
   const S = src(source);
   const list = await call(app.env, 'listResources', { criteria: { dataset_uri: S.dataset } });
   const res = (list.resources || []).slice().sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || Number(b.id) - Number(a.id))[0];
-  if (!res) throw new Error('В набора няма ресурси.');
+  if (!res) fail('external', 'В набора на портала няма ресурси.');
   const meta = JSON.parse((await app.kv.get(S.meta)) || 'null');
   if (!force && meta && meta.uri === res.uri) return Object.assign({ updated: false }, meta);
   const data = (await call(app.env, 'getResourceData', { resource_uri: res.uri })).data || {};
   const items = S.map(data);
-  if (items.length < S.min) throw new Error('Ресурсът съдържа твърде малко записи (' + items.length + ') – не е зареден.');
+  if (items.length < S.min) fail('external', 'Ресурсът съдържа твърде малко записи (' + items.length + ') – не е зареден.');
   const m = { uri: res.uri, name: t(res.name), count: items.length, at: stamp(), source: 'https://data.egov.bg/data/view/' + S.dataset };
   await app.kv.put(S.key, JSON.stringify(items));
   await app.kv.put(S.meta, JSON.stringify(Object.assign({}, meta && meta.extraAt ? { extraAt: meta.extraAt, extraCount: meta.extraCount, extraName: meta.extraName } : {}, m)));
@@ -145,13 +142,15 @@ async function loadRegistry(app, source = 'iisda') {
 
 /* Cron: веднъж на ден проверява двата набора за нов ресурс */
 export async function registryDaily(app, now = new Date()) {
-  const key = 'reg:checked:' + todayIso(now);
-  if (await app.kv.get(key)) return { skipped: 'вече проверено' };
-  await app.kv.put(key, '1', { expirationTtl: 2 * 86400 });
+  const key = 'reg:checked:' + todayIso(now), checked = !!(await app.kv.get(key));
   const out = {};
   for (const s of Object.keys(SOURCES)) {
+    const empty = !(await app.kv.get(SOURCES[s].key));
+    if (checked && !empty) continue;
     try { const r = await refreshRegistry(app, false, s); out[s] = { updated: r.updated, count: r.count }; } catch (e) { out[s] = { error: e.message }; }
   }
+  if (!Object.keys(out).length) return { skipped: 'вече проверено' };
+  if (!checked) await app.kv.put(key, '1', { expirationTtl: 2 * 86400 });
   return Object.assign({ updated: Object.values(out).some(x => x.updated) }, out);
 }
 

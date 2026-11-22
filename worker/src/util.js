@@ -85,3 +85,21 @@ export function view(row) {
 }
 
 export const byDesc = key => (a, b) => String(b[key] || '').localeCompare(String(a[key] || ''));
+
+/*
+ * Заявка към външна система (data.egov.bg, ЕПЕП) с до 3 опита: някои сайтове понякога отказват (403, 429, 5xx) на
+ * заявките от мрежата на Cloudflare. При неуспех – ясна грешка за потребителя (не „Вътрешна грешка“).
+ */
+export async function fetchRetry(f, url, init, label, waits = [400, 1500]) {
+  let last = '';
+  for (let i = 0; i <= waits.length; i++) {
+    try {
+      const r = await f(url, init);
+      if (r.ok) return r;
+      last = 'код ' + r.status;
+      if (![403, 408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 524].includes(r.status)) break;
+    } catch (e) { last = e.message; }
+    if (i < waits.length) await new Promise(ok => setTimeout(ok, waits[i]));
+  }
+  fail('external', label + ' не отговаря в момента (' + last + '). Опитайте отново след малко.');
+}

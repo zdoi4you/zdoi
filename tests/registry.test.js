@@ -51,7 +51,11 @@ test('регистър на административните структур�
   const d = await registryDaily(app, new Date('2026-11-23T09:00:00+02:00'));
   assert.equal(d.updated, false);
   assert.equal(env.__egov.calls.filter(c => c === 'getResourceData').length, n);
-  assert.equal((await registryDaily(app, new Date('2026-11-23T10:00:00+02:00'))).skipped, 'вече проверено');
+  // второ пускане същия ден: регистърът на администрациите не се проверява отново, а празният (училищата) – да
+  const d2 = await registryDaily(app, new Date('2026-11-23T10:00:00+02:00'));
+  assert.equal(d2.iisda, undefined);
+  assert.ok(d2.mon && d2.mon.error);
+  assert.equal(env.__egov.calls.filter(c => c === 'getResourceData').length, n);
 });
 
 test('училища и детски градини (МОН): списък, БУЛСТАТ и имейл от файла на ri.mon.bg, адресати', async () => {
@@ -81,4 +85,20 @@ test('училища и детски градини (МОН): списък, БУ
   assert.equal(su.email, 'info@su0.bg');
   assert.equal(su.seat, 'Банско');
   assert.equal((await admin.call('registry.import', { source: 'mon', keys: ['mon:100001'] })).added, 0);
+});
+
+test('външни системи: повторен опит при 403 и ясна грешка вместо „Вътрешна грешка“', async () => {
+  const { fetchRetry } = await import('../worker/src/util.js');
+  let n = 0;
+  const flaky = async () => (++n < 3 ? new Response('no', { status: 403 }) : new Response('{}', { status: 200 }));
+  const r = await fetchRetry(flaky, 'https://x', {}, 'Тест', [1, 1]);
+  assert.equal(r.status, 200);
+  assert.equal(n, 3);
+  await assert.rejects(fetchRetry(async () => new Response('no', { status: 403 }), 'https://x', {}, 'Порталът', [1]), e => e.code === 'external' && /не отговаря в момента \(код 403\)/.test(e.message));
+  // през системата: отказ от портала → грешка „external“ с обяснение
+  const { env, admin } = await ready();
+  env.__egov = async () => new Response('Forbidden', { status: 403 });
+  const s = await admin.call('registry.search', { source: 'mon', q: 'x' });
+  assert.equal(s.error, 'external');
+  assert.match(s.message, /data\.egov\.bg/);
 });
