@@ -94,23 +94,29 @@ export function parseManual(md) {
   return out.map((s, i) => ({ title: s.title, audience: s.audience, perm: s.perm, order: (i + 1) * 10, body: s.lines.join('\n').trim() }));
 }
 
-export async function helpImport(d, ctx, app) {
-  const list = parseManual(str(d.markdown, 600000));
+/* записва разделите от Markdown в списъка (и от tools/sp-provision.js --manual): същото заглавие – замяна, иначе – нов */
+export async function importManual(store, markdown, by) {
+  const list = parseManual(str(markdown, 600000));
   if (!list.length) fail('value', 'Във файла няма раздели („## Заглавие“).');
   if (list.length > 200) fail('value', 'Твърде много раздели (до 200).');
-  const rows = await app.store.list('help');
+  const rows = await store.list('help');
   let added = 0, updated = 0;
   for (const s of list) {
     const v = sectionFields(s);
     const cur = rows.find(r => r.title === v.title);
-    if (cur) { await app.store.patch('help', cur._id, Object.assign(v, { updatedAt: stamp(), by: ctx.username })); updated++; continue; }
+    if (cur) { await store.patch('help', cur._id, Object.assign(v, { updatedAt: stamp(), by })); updated++; continue; }
     let key = slug(v.title), n = 2;
     while (rows.some(r => r.key === key)) key = slug(v.title) + '-' + n++;
-    rows.push(await app.store.insert('help', Object.assign(v, { key, at: stamp(), updatedAt: stamp(), by: ctx.username })));
+    rows.push(Object.assign(await store.insert('help', Object.assign(v, { key, at: stamp(), updatedAt: stamp(), by })), { key, title: v.title }));
     added++;
   }
-  await audit(app, ctx.username, 'Импорт на ръководството', '', 'нови ' + added + ', обновени ' + updated);
   return { added, updated };
+}
+
+export async function helpImport(d, ctx, app) {
+  const r = await importManual(app.store, d.markdown, ctx.username);
+  await audit(app, ctx.username, 'Импорт на ръководството', '', 'нови ' + r.added + ', обновени ' + r.updated);
+  return r;
 }
 
 /* ---------- тикети ---------- */

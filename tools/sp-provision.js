@@ -4,7 +4,9 @@
  *   2. списъците „ADM …“ с колоните и индексите (безопасно е да се повтаря);
  *   3. първия администратор на системата с еднократна връзка за парола (само ако няма администратор).
  *
- *   node tools/sp-provision.js [--site bulmaileu.sharepoint.com:/sites/adm-zdoi] [--create] [--username admin]
+ *   node tools/sp-provision.js [--site bulmaileu.sharepoint.com:/sites/adm-zdoi] [--create] [--username admin] [--manual private/rakovodstvo.md]
+ *
+ * --manual: качва ръководството (Markdown) в списъка „ADM Ръководство“; раздел със същото заглавие се заменя.
  *
  * Нужни делегирани права: Sites.Manage.All, а при --create и Group.ReadWrite.All.
  */
@@ -14,6 +16,8 @@ import { graph } from '../worker/src/graph.js';
 import { newInvite, inviteLink } from '../worker/src/auth.js';
 import { stamp } from '../worker/src/util.js';
 import { CFG, ROLE_SUPER, isAdminRole } from '../worker/src/config.js';
+import { importManual } from '../worker/src/help.js';
+import { readFileSync } from 'node:fs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i > 0 ? process.argv[i + 1] : def; };
 const TENANT = arg('tenant', 'bulmail.eu');
@@ -21,6 +25,8 @@ const SITE = arg('site', 'bulmaileu.sharepoint.com:/sites/adm-zdoi');
 const CREATE = process.argv.includes('--create');
 const USERNAME = arg('username', 'admin');
 const APP_URL = arg('app', 'https://adm.zdoi.eu/');
+const MANUAL = arg('manual', '');
+const manualText = MANUAL ? readFileSync(MANUAL, 'utf8') : '';
 // Microsoft Graph Command Line Tools – публичен клиент на Microsoft
 const CLIENT = arg('client', '14d82eec-204b-4c2f-b7e8-296a70dab67e');
 const SCOPES = ['https://graph.microsoft.com/Sites.Manage.All', 'https://graph.microsoft.com/User.Read'].concat(CREATE ? ['https://graph.microsoft.com/Group.ReadWrite.All'] : []).join(' ');
@@ -81,6 +87,12 @@ console.log('\nСайт: ' + site.webUrl + '\nID:   ' + site.id);
 const store = new SharePointStore(Object.assign({}, env, { SP_SITE: site.id }));
 const { created } = await store.ensureSchema();
 console.log(created.length ? 'Създадени: ' + created.join(', ') : 'Всички списъци и колони вече съществуват.');
+
+if (manualText) {
+  const r = await importManual(store, manualText, 'sp-provision');
+  await store.insert('log', { at: stamp(), actor: 'sp-provision', action: 'Импорт на ръководството', ref: '', details: 'нови ' + r.added + ', обновени ' + r.updated });
+  console.log('Ръководство: нови ' + r.added + ', обновени ' + r.updated + ' раздела.');
+}
 
 const users = await store.list('users');
 if (users.some(u => isAdminRole(u.role))) {
