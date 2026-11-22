@@ -130,3 +130,34 @@ test('търсене на организация по наименование: 
   assert.equal((await admin.call('verify.name', { name: 'а-' })).error, 'value');
   assert.equal((await admin.call('verify.name', {})).error, 'required');
 });
+
+test('БУЛСТАТ – свързаност на физическо лице (rpt3 → v_rpt3): съвпадения, участия в управлението, настоящи и минали', async () => {
+  const { env, admin } = await ready();
+  const urls = [];
+  env.__cr = async url => new Response(new URL(url).pathname.includes('/labels/') ? '{}' : '');
+  env.__bulstat = async url => {
+    urls.push(url);
+    if (url.includes('rpt3.rptdesign') && !url.includes('v_rpt3')) return new Response(`<table><tr><th>Субект</th><th>Дата на раждане</th><th>Гражданство</th></tr>
+<tr valign="top"><td><div><a href="https://reports.bulstat.bg/bulstat-ireports/preview?__report=x%2Fv_rpt3.rptdesign&amp;__format=html&amp;subjectId=111&amp;__locale=bg">ИВАН ПЕТРОВ ИВАНОВ</a></div></td><td></td><td><div>БЪЛГАРИЯ</div></td></tr>
+<tr valign="top"><td><div><a href="https://reports.bulstat.bg/bulstat-ireports/preview?__report=x%2Fv_rpt3.rptdesign&amp;subjectId=222">ИВАН ПЕТРОВ ИВАНОВ</a></div></td><td></td><td><div>БЪЛГАРИЯ</div></td></tr>
+<tr><td colspan="3"><table><tr><td><div>Общо:</div></td><td><div class="s">140</div></td></tr></table></td></tr></table>`);
+    if (url.includes('subjectId=111')) return new Response(`<table><tr><th colspan="2"><div>Основни данни</div></th></tr>
+<tr><td><div>Имена на кирилица</div></td><td><div>ИВАН ПЕТРОВ ИВАНОВ</div></td></tr><tr><td><div>Код по БУЛСТАТ</div></td><td><div></div></td></tr></table>
+<table><tr><th colspan="8"><div>Участва в управлението на следните субекти</div></th></tr>
+<tr><th>Код по БУЛСТАТ</th><th>Пълно наименование</th><th>Длъжност</th><th>Роля</th><th>Вид на колективен орган</th><th>От</th><th>До</th><th>Представлява в управлението</th></tr>
+<tr><td><div>119535427</div></td><td><div>БЪЛГАРИЯ, СДРУЖЕНИЕ "КЛУБ", правна форма: Сдружение, юридическо лице</div></td><td><div>Председател</div></td><td><div>управляващ</div></td><td></td><td><div>16.09.1996</div></td><td><div>06.03.2001</div></td><td></td></tr>
+<tr><td><div>000403439</div></td><td><div>БЪЛГАРИЯ, ПГЛВ "АЛЕКСАНДЪР СТАМБОЛИЙСКИ", правна форма: Училище</div></td><td><div>Директор</div></td><td><div>управляващ</div></td><td></td><td><div>01.09.2020</div></td><td></td><td><div>Да</div></td></tr></table>`);
+    return new Response('<table><tr><th colspan="2"><div>Основни данни</div></th></tr><tr><td><div>Код по БУЛСТАТ</div></td><td><div>179751899</div></td></tr></table>');
+  };
+  const r = await admin.call('verify.person', { name: 'Иван Петров Иванов', birth: '1975-01-01' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const bp = r.bulstatPeople;
+  assert.equal(bp.total, 140);
+  assert.equal(bp.people.length, 2);
+  const rows = bp.people[0].groups[0].rows;
+  assert.deepEqual(rows.map(x => [x.eik, x.name, x.legalForm, x.active]), [['119535427', 'СДРУЖЕНИЕ "КЛУБ"', 'Сдружение', false], ['000403439', 'ПГЛВ "АЛЕКСАНДЪР СТАМБОЛИЙСКИ"', 'Училище', true]]);
+  assert.equal(rows[1].position, 'Директор');
+  assert.equal(bp.people[1].code, '179751899');
+  assert.ok(urls.some(u => /rpt3\.rptdesign&cyrNames=%D0%98%D0%92%D0%90%D0%9D%20.*&birthDate=1975-01-01/.test(u)));
+  assert.equal((await admin.call('verify.person', { name: 'Иван Петров', birth: '1975-13-01' })).error, 'value');
+});

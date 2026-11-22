@@ -2013,28 +2013,50 @@ function verifyView(query) {
   if (mode === 'person') {
     const name = h('input', { type: 'text', maxlength: 120, placeholder: 'Име (поне собствено и фамилно)', 'aria-label': 'Име', autocomplete: 'off' });
     const egn = h('input', { type: 'password', inputmode: 'numeric', maxlength: 10, placeholder: 'ЕГН (по желание)', 'aria-label': 'ЕГН', autocomplete: 'off' });
+    const birth = h('input', { type: 'date', min: '1900-01-01', max: todayIso(), 'aria-label': 'Дата на раждане (по желание)', title: 'Дата на раждане (по желание) – стеснява търсенето в регистър БУЛСТАТ' });
     const hist = h('input', { type: 'checkbox' });
     const run = async () => {
-      out.replaceChildren(h('p', { class: 'loading' }, 'Търсене в Търговския регистър, регистъра на ЮЛНЦ' + (egn.value ? ' и регистър БУЛСТАТ' : '') + '…'));
+      out.replaceChildren(h('p', { class: 'loading' }, 'Търсене в Търговския регистър, регистъра на ЮЛНЦ и регистър БУЛСТАТ…'));
       try {
-        const r = await api('verify.person', { name: name.value, egn: egn.value, history: hist.checked });
-        const b = r.bulstat;
+        const r = await api('verify.person', { name: name.value, egn: egn.value, birth: birth.value, history: hist.checked });
+        const b = r.bulstat, bp = r.bulstatPeople || { people: [], total: 0 };
+        const relRow = x => h('tr', { class: x.active ? '' : 'muted' },
+          h('td', null, x.eik ? h('a', { class: 'btn sm', href: '#/verify?eik=' + x.eik, title: 'Проверка на организацията' }, x.eik) : '—'),
+          h('td', null, x.name, x.legalForm ? h('div', { class: 'small muted' }, x.legalForm) : null),
+          h('td', null, [x.position, x.role].filter(Boolean).join(' · ') || '—', x.body ? h('div', { class: 'small muted' }, x.body) : null),
+          h('td', { class: 'nowrap' }, (x.from || '…') + ' – ' + (x.to || 'досега')),
+          h('td', null, h('span', { class: 'pill ' + (x.active ? 'ok' : '') }, x.active ? 'настоящо' : 'минало')));
+        const shownRel = g => g.rows.filter(x => x.active || hist.checked);
+        const withRel = bp.people.filter(p => p.groups.some(g => shownRel(g).length)), noRel = bp.people.filter(p => !withRel.includes(p));
+        const bsCard = h('section', { class: 'card stack' },
+          h('div', { class: 'head m-0' }, h('h2', null, 'Регистър БУЛСТАТ – свързаност на физическо лице'), bp.error ? h('span', { class: 'pill warn' }, 'недостъпен') : h('span', { class: 'pill' }, bp.total + ' съвпадения')),
+          bp.error ? h('p', { class: 'warn-text small' }, bp.error) : null,
+          bp.total > bp.people.length ? h('p', { class: 'small muted' }, 'Проверени са първите ' + bp.people.length + ' – добавете дата на раждане или ЕГН, за да стесните търсенето.') : null,
+          withRel.map(p => h('div', { class: 'stack person-hit' },
+            h('div', null, h('b', null, p.name), h('span', { class: 'small muted' }, [p.birthDate ? ' · роден(а) ' + p.birthDate : '', p.code ? ' · код по БУЛСТАТ ' + p.code : '', p.citizenship ? ' · ' + p.citizenship : ''].join('')),
+              ' ', h('a', { class: 'small', href: p.link, target: '_blank', rel: 'noopener noreferrer' }, 'справката в БУЛСТАТ')),
+            p.groups.filter(g => shownRel(g).length).map(g => h('div', { class: 'stack' }, h('div', { class: 'small muted' }, g.title),
+              table(['Код', 'Субект', 'Длъжност / роля', 'Период', ''], shownRel(g).map(relRow)))))),
+          noRel.length ? h('p', { class: 'small muted' }, (withRel.length ? 'Още ' : '') + noRel.length + (noRel.length === 1 ? ' лице' : ' лица') + ' без ' + (hist.checked ? '' : 'настоящо ') + 'участие в управлението на субекти: ',
+            noRel.map((p, i) => [i ? ', ' : '', h('a', { href: p.link, target: '_blank', rel: 'noopener noreferrer' }, p.name + (p.code ? ' (' + p.code + ')' : ''))])) : null,
+          !bp.error && !bp.total ? h('p', { class: 'empty' }, 'Няма лице с тези данни в регистър БУЛСТАТ.') : null);
         out.replaceChildren(h('div', { class: 'stack' },
           r.crError ? h('p', { class: 'warnbox' }, r.crError) : null,
           h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Търговски регистър и регистър на ЮЛНЦ'), h('span', { class: 'pill' }, r.total + ' съвпадения')),
             r.total > r.shown ? h('p', { class: 'small muted' }, 'Показани са първите ' + r.shown + ' – уточнете името или въведете ЕГН.') : null,
             r.people.length ? r.people.map(x => h('div', { class: 'stack person-hit' }, h('b', null, x.name), x.error ? h('p', { class: 'warn-text small' }, x.error) : orgList(x.orgs)))
               : h('p', { class: 'empty' }, 'Няма вписано лице с тези данни.')),
-          b ? h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Регистър БУЛСТАТ (по ЕГН)'), h('span', { class: 'pill ' + (b.found ? 'ok' : '') }, b.found ? (b.state || 'вписано') : 'няма запис')),
+          bsCard,
+          b ? h('section', { class: 'card stack' }, h('div', { class: 'head m-0' }, h('h2', null, 'Регистър БУЛСТАТ – самостоятелно вписване (по ЕГН)'), h('span', { class: 'pill ' + (b.found ? 'ok' : '') }, b.found ? (b.state || 'вписано') : 'няма запис')),
             b.error ? h('p', { class: 'warn-text small' }, b.error) : b.found ? kv([['Наименование', b.name], ['Правна форма', b.legalForm], ['Състояние', b.state], ['Адрес', b.address], ['Дейност', b.activity]])
               : h('p', { class: 'muted small' }, 'Лицето не е вписано самостоятелно в регистър БУЛСТАТ (напр. като свободна професия или занаятчия).')) : null,
           h('p', { class: 'small muted' }, 'Проверено ' + fmtTime(r.at) + (r.history ? ', включително заличените обстоятелства' : '') + '. ЕГН се изпраща само към регистрите и не се записва в системата.')));
       } catch (e) { out.replaceChildren(h('p', { class: 'err' }, e.message)); }
     };
-    [name, egn].forEach(x => x.addEventListener('keydown', e => { if (e.key === 'Enter') run(); }));
+    [name, egn, birth].forEach(x => x.addEventListener('keydown', e => { if (e.key === 'Enter') run(); }));
     setView(head('Проверки в регистрите'), tabs,
-      h('p', { class: 'small muted mb-12' }, 'В кои дружества и сдружения участва лицето – като управител, представител, съдружник, едноличен собственик, член на органите (Търговски регистър и регистър на ЮЛНЦ), и дали е вписано в регистър БУЛСТАТ (по ЕГН). Търсенето по име може да върне съименници – ЕГН ги разграничава.'),
-      h('div', { class: 'card stack mb-16' }, h('div', { class: 'filters m-0' }, name, egn, h('button', { class: 'btn primary', onclick: run }, 'Търси')),
+      h('p', { class: 'small muted mb-12' }, 'В кои дружества и сдружения участва лицето – като управител, представител, съдружник, едноличен собственик, член на органите (Търговски регистър и регистър на ЮЛНЦ), и в управлението на кои субекти е вписано в регистър БУЛСТАТ (училища, читалища, сдружения, клонове и др.), с длъжност и период. Търсенето по име може да върне съименници – датата на раждане или ЕГН ги разграничава.'),
+      h('div', { class: 'card stack mb-16' }, h('div', { class: 'filters m-0' }, name, birth, egn, h('button', { class: 'btn primary', onclick: run }, 'Търси')),
         h('label', { class: 'check' }, hist, h('span', null, 'Включи и минали участия (заличени обстоятелства)'))),
       out);
     return;

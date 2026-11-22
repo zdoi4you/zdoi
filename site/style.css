@@ -513,3 +513,5 @@ body.sys-guard.shield::after { content: "Скрито – върнете се в
   body.sys-guard::before { content: "Печатът от системата не е разрешен. Опитът е записан в дневника."; display: block; padding: 48px; font: 16px sans-serif; }
   body.sys-guard::after { display: none !important; }
 }
+.nowrap { white-space: nowrap; }
+tr.muted td { color: var(--muted); }

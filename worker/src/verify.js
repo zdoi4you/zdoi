@@ -158,17 +158,103 @@ export function egnValid(egn) {
 }
 const t = v => String(v || '').replace(/\s+/g, ' ').trim();
 
-/* физическо лице: по име и/или ЕГН */
+/* ---------- регистър БУЛСТАТ: свързаност на физическо лице (rpt3 → v_rpt3) ---------- */
+
+/*
+ * rpt3 „Справка за свързаност на физическо лице“ – по имена на кирилица (cyrNames), дата на раждане (birthDate,
+ * ГГГГ-ММ-ДД) и/или ЕГН; връща лицата (до 999) с връзка към v_rpt3?subjectId – основни данни и в управлението
+ * на кои субекти участва (код, наименование, длъжност, роля, орган, от, до, представлява).
+ */
+const cellsOf = (row, tag) => [...row.matchAll(new RegExp('<' + tag + '[^>]*>([\\s\\S]*?)<\\/' + tag + '>', 'g'))].map(c => t(text(c[1])));
+const BS_V3 = BS + '/preview?__report=https%3A%2F%2Freports.bulstat.bg%2Fbulstat-ireports%2Fv_rpt3.rptdesign&__format=html&__locale=bg&subjectId=';
+
+export function parseBulstatPeople(html) {
+  const items = [];
+  for (const m of String(html || '').matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)) {
+    const a = /<a[^>]*href="[^"]*v_rpt3\.rptdesign[^"]*subjectId=(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/.exec(m[1]);
+    if (!a) continue;
+    const cells = cellsOf(m[1], 'td');
+    items.push({ subjectId: a[1], name: t(text(a[2])), birthDate: cells[1] || '', citizenship: cells[2] || '' });
+  }
+  const total = Number((/Общо:[\s\S]*?<div[^>]*>\s*(\d+)\s*<\/div>/.exec(html) || [])[1]) || items.length;
+  return { total, items };
+}
+
+/* дд.мм.гггг → гггг-мм-дд (за сравнение „до“ с днес) */
+const isoOf = v => { const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(v || ''); return m ? m[3] + '-' + m[2] + '-' + m[1] : ''; };
+
+export function parseBulstatRelations(html, today = stamp().slice(0, 10)) {
+  const out = { name: '', citizenship: '', birthDate: '', code: '', groups: [] };
+  let group = null, cols = null;
+  for (const m of String(html || '').replace(/<style[\s\S]*?<\/style>/g, '').matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)) {
+    const th = cellsOf(m[1], 'th'), td = cellsOf(m[1], 'td');
+    if (th.length === 1 && th[0]) { cols = null; group = /^Основни данни$/.test(th[0]) ? null : { title: th[0], rows: [] }; if (group) out.groups.push(group); continue; }
+    if (th.length > 1) { cols = th; continue; }
+    if (!td.length) continue;
+    if (group && cols && td.length >= cols.length - 1) {
+      const r = {};
+      cols.forEach((c, i) => { r[c] = td[i] || ''; });
+      const full = r['Пълно наименование'] || r['Наименование'] || '';
+      const fm = /^(?:[А-ЯA-Z ]+,\s*)?(.*?)(?:,\s*правна форма:\s*([^,]*))?(?:,\s*(?:юридическо лице|неперсонифицирано дружество|клон|поделение)[^,]*)?$/.exec(full) || [];
+      const to = r['До'] || '';
+      group.rows.push({
+        eik: (r['Код по БУЛСТАТ'] || '').replace(/\D/g, ''), name: fm[1] || full, legalForm: fm[2] || '',
+        position: r['Длъжност'] || '', role: r['Роля'] || '', body: r['Вид на колективен орган'] || '',
+        from: r['От'] || '', to, represents: r['Представлява в управлението'] || '', active: !to || isoOf(to) >= today
+      });
+      continue;
+    }
+    if (!group && td.length >= 1) {
+      const [k, v] = td;
+      if (k === 'Имена на кирилица') out.name = v || '';
+      else if (k === 'Гражданство') out.citizenship = v || '';
+      else if (k === 'Дата на раждане') out.birthDate = v || '';
+      else if (k === 'Код по БУЛСТАТ') out.code = (v || '').replace(/\D/g, '');
+    }
+  }
+  out.groups = out.groups.filter(g => g.rows.length);
+  return out;
+}
+
+async function bsGet(app, url) {
+  const f = app.env.__bulstat || fetch;
+  const r = await fetchRetry(f, url, { headers: { 'User-Agent': UA, Accept: 'text/html' } }, 'Регистър БУЛСТАТ (reports.bulstat.bg)', app.env.__bulstat ? [] : undefined);
+  const html = await r.text();
+  if (/ReportServiceException|Exception:/.test(html) && !/Няма намерен/.test(html)) fail('external', 'Регистър БУЛСТАТ отказа справката: ' + t(text((/Exception:([^<]{0,160})/.exec(html) || [])[1] || 'невалидни данни')));
+  return html;
+}
+
+/* до 8 лица – с участията им в управлението; ЕГН се ползва само в заявката към регистъра */
+export async function searchBulstatPersons(app, { name, birth, egn }, max = 8) {
+  const params = [name ? 'cyrNames=' + encodeURIComponent(name.toUpperCase()) : '', birth ? 'birthDate=' + birth : '', egn ? 'EGN=' + egn : ''].filter(Boolean).join('&');
+  const list = parseBulstatPeople(await bsGet(app, BS + '/preview?__format=html&__locale=bg&__report=https%3A%2F%2Freports.bulstat.bg%2Fbulstat-ireports%2Frpt3.rptdesign&' + params));
+  const people = [];
+  for (let i = 0; i < Math.min(max, list.items.length); i += 4) {
+    const part = await Promise.all(list.items.slice(i, Math.min(i + 4, max)).map(async x => {
+      try {
+        const rel = parseBulstatRelations(await bsGet(app, BS_V3 + x.subjectId));
+        return Object.assign({}, x, { birthDate: rel.birthDate || x.birthDate, code: rel.code, groups: rel.groups, link: BS_V3 + x.subjectId });
+      } catch (e) { return Object.assign({}, x, { groups: [], error: e.message, link: BS_V3 + x.subjectId }); }
+    }));
+    people.push(...part);
+  }
+  return { total: list.total, people };
+}
+
+/* физическо лице: по име и/или ЕГН (и дата на раждане – за БУЛСТАТ) */
 export async function verifyPerson(d, ctx, app) {
   const name = t(str(d.name, 120));
   const egn = str(d.egn, 12).replace(/\D/g, '');
   if (!name && !egn) fail('required', 'Въведете име или ЕГН.');
   if (name && (!/^[А-Яа-яA-Za-z' -]+$/.test(name) || name.split(' ').length < 2)) fail('value', 'Въведете поне собствено и фамилно име (само букви).');
   if (egn && !egnValid(egn)) fail('value', 'Невалидно ЕГН.');
+  const birth = str(d.birth, 10);
+  if (birth && !/^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(birth)) fail('value', 'Невалидна дата на раждане.');
   const history = d.history === true;
-  const [subjects, bulstat] = await Promise.all([
+  const [subjects, bulstat, bsPeople] = await Promise.all([
     crGet(app, 'Subjects?' + qs({ page: 1, pageSize: 20, name, ident: egn, includeHistory: history ? 'true' : 'false', selectedSearchFilter: 0 })).catch(e => ({ error: e.message })),
-    egn ? checkBulstat(app, egn).catch(e => ({ error: e.message })) : Promise.resolve(null)
+    egn ? checkBulstat(app, egn).catch(e => ({ error: e.message })) : Promise.resolve(null),
+    searchBulstatPersons(app, { name, birth, egn }).catch(e => ({ error: e.message, total: 0, people: [] }))
   ]);
   let people = [];
   if (Array.isArray(subjects)) {
@@ -178,8 +264,9 @@ export async function verifyPerson(d, ctx, app) {
     }
   }
   if (bulstat && bulstat.found) bulstat.link = ''; // справката по ЕГН не се отваря с връзка (би показала ЕГН в адреса)
-  await audit(app, ctx.username, 'Проверка на участие на физическо лице', '', (name || '—') + (egn ? ' · ЕГН ' + egn.slice(0, 2) + '********' : ''));
+  await audit(app, ctx.username, 'Проверка на участие на физическо лице', '', (name || '—') + (birth ? ' · роден(а) ' + birth.slice(0, 4) : '') + (egn ? ' · ЕГН ' + egn.slice(0, 2) + '********' : ''));
   return {
+    birthGiven: !!birth, bulstatPeople: bsPeople,
     at: stamp(), name, egnGiven: !!egn, history, total: Array.isArray(subjects) ? subjects.length : 0, shown: people.length,
     people, crError: subjects && subjects.error ? subjects.error : '', bulstat: bulstat ? (bulstat.found ? bulstat : { found: false, error: bulstat.error }) : null
   };
