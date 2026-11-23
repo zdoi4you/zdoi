@@ -292,8 +292,11 @@ const yes = v => (v ? 'да' : 'не');
 const t = iso => (iso ? new Date(iso).toLocaleString('bg-BG', { timeZone: 'Europe/Sofia', dateStyle: 'short', timeStyle: 'medium' }) + ' ч.' : '—');
 const REV = r => (r.status === 'good' ? 'валидно – не е прекратено/спряно' : r.status === 'revoked' ? 'ПРЕКРАТЕНО/СПРЯНО' + (r.revokedAt ? ' на ' + t(r.revokedAt) : '') + (r.reason ? ' (' + r.reason + ')' : '') : 'не е проверено' + (r.note ? ': ' + r.note : ''));
 const small = (txt, o) => Object.assign({ text: txt, fontSize: 8.5 }, o || {});
-const mono = txt => ({ text: String(txt || '—'), fontSize: 7.5, font: 'Roboto', characterSpacing: 0.2 });
-const kvT = rows => ({ table: { widths: [160, '*'], dontBreakRows: true, body: rows.filter(Boolean).map(([k, v]) => [{ text: k, color: GRAY, fontSize: 8.5 }, typeof v === 'object' && v && !Array.isArray(v) ? v : { text: v === '' || v === null || v === undefined ? '—' : Array.isArray(v) ? (v.length ? v.join('\n') : '—') : String(v), fontSize: 8.5 }]) }, layout: 'lightHorizontalLines', margin: [0, 0, 0, 6] });
+/* дълги низове без интервал (хешове, адреси, Message-ID) не се пренасят и разширяват таблицата извън страницата:
+   хешовете – на групи по 8 знака, останалите – на части по 40 */
+const breakLong = v => String(v).replace(/\b[0-9A-Fa-f]{24,}\b/g, x => x.match(/.{1,8}/g).join(' ')).replace(/\S{41,}/g, x => x.match(/.{1,40}/g).join(' '));
+const mono = txt => ({ text: breakLong(txt || '—'), fontSize: 7.5, font: 'Roboto', characterSpacing: 0.2 });
+const kvT = rows => ({ table: { widths: [150, '*'], dontBreakRows: true, body: rows.filter(Boolean).map(([k, v]) => [{ text: k, color: GRAY, fontSize: 8.5 }, typeof v === 'object' && v && !Array.isArray(v) ? v : { text: v === '' || v === null || v === undefined ? '—' : breakLong(Array.isArray(v) ? (v.length ? v.join('\n') : '—') : String(v)), fontSize: 8.5 }]) }, layout: 'lightHorizontalLines', margin: [0, 0, 0, 6] });
 const h3 = txt => ({ text: txt, bold: true, fontSize: 10.5, color: BLUE, margin: [0, 10, 0, 4] });
 
 function certRows(c, label) {
