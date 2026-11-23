@@ -74,8 +74,8 @@ test('проверка на подпис: КЕП с квалифициран д�
   assert.equal(s.qes, true);
   assert.equal(s.level, 'PAdES-BASELINE-B');
   assert.equal(s.reason, 'Решение по ЗДОИ');
-  assert.match(s.signer.subject, /PNOBG-80\*{6}00/);
-  assert.ok(!JSON.stringify(rep).includes('8001010000'), 'идентификаторът е маскиран');
+  assert.match(s.signer.subject, /SERIALNUMBER=PNOBG-8001010000/);
+  assert.equal(s.signer.id, 'PNOBG-8001010000');
   assert.equal(s.chain[0].name, 'Test Qualified CA');
   assert.equal(rep.summary.overall, 'TOTAL-PASSED');
   assert.ok(rep.legal.some(x => /саморъчен подпис/.test(x)));
@@ -118,7 +118,7 @@ test('кореспонденция: автоматична проверка на
   const g = await admin.call('req.get', { regNo });
   const att = g.mail.find(x => x._id === m._id).attachments[0];
   assert.equal(att.sig.overall, 'TOTAL-PASSED');
-  assert.equal((await admin.call('sig.check', { id: m._id, index: 1 })).error, 'value');
+  assert.equal((await admin.call('sig.check', { id: m._id, index: 9 })).error, 'notfound');
   // протокол – документ по преписката, данните са от сървъра
   const p = await admin.call('sig.protocol', { id: m._id, index: 0 });
   assert.equal(p.ok, true, JSON.stringify(p).slice(0, 500));
@@ -134,4 +134,53 @@ test('кореспонденция: автоматична проверка на
   assert.equal((await admin.call('doc.reserve', { regNo, kind: 'Писмо', outNo: p.outNo, payload: { report: {} } })).error, 'value');
   const log = (await admin.call('log.list')).log;
   assert.ok(log.some(l => l.action === 'Проверка на подписите'));
+});
+
+/* CAdES: подписаните атрибути върху съдържанието; enveloping – съдържанието е вътре (.p7m), иначе – отделен (.p7s) */
+function cades(content, signer, enveloping) {
+  const attrs = D.signedAttrs(new Uint8Array(createHash('sha256').update(content).digest()), signer.cert, new Uint8Array(createHash('sha256').update(signer.der).digest()));
+  const sig = new Uint8Array(nodeSign('sha256', D.attrsToSign(attrs), signer.key));
+  const si = D.seq(D.int(1), D.seq(signer.cert.issuerRaw, signer.cert.serialRaw), D.algo(D.OID.sha256), D.tlv(0xa0, D.read(D.setOf(...attrs)).body), D.algo(D.OID.rsa), D.octets(sig));
+  const enc = enveloping ? D.seq(D.oid(D.OID.data), D.ctx(0, D.octets(content))) : D.seq(D.oid(D.OID.data));
+  return D.seq(D.oid(D.OID.signedData), D.ctx(0, D.seq(D.int(1), D.set(D.algo(D.OID.sha256)), enc, D.ctx(0, signer.der), D.set(si))));
+}
+
+test('всеки файл: CAdES .p7m (вградено съдържание), отделен .p7s към файла от писмото, файл без подпис, XAdES – неподдържан', async () => {
+  fakeProvider({ [OCSP]: () => ({ body: ocspResponse(ca, leaf, 'good') }), [CAURL]: () => ({ body: ca.der }) }, realFetch);
+  const { env, admin } = await ready();
+  env.__tl = tlFetch;
+  const { regNo } = await admin.call('req.create', { mode: 'Сдружението', title: 'Тест', entity: { name: 'Община Тест', email: 'a@example.org' }, points: ['Точка 1'] });
+  const doc = new TextEncoder().encode('Решение № 5 от 20.11.2026 г. – предоставя се достъп.');
+  const up = async (name, bytes, type) => Object.assign({ name, size: bytes.length, contentType: type }, { fileId: (await env.__store.uploadFile(regNo + '/' + name, bytes, type)).id });
+  const atts = [
+    await up('решение.docx', doc, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    await up('решение.docx.p7s', cades(doc, leaf, false), 'application/pkcs7-signature'),
+    await up('писмо.p7m', cades(doc, leaf, true), 'application/pkcs7-mime'),
+    await up('отговор.xml', new TextEncoder().encode('<?xml version="1.0"?><doc><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo/></ds:Signature></doc>'), 'text/xml'),
+    await up('самотен.p7s', cades(new TextEncoder().encode('друго'), leaf, false), 'application/pkcs7-signature')
+  ];
+  const m = await env.__store.insert('mail', { regNo, direction: 'Входяща', at: '2026-11-20T10:30:00', from: 'obshtina@example.org', subject: 'Решение', body: '', attachments: JSON.stringify(atts) });
+  const chk = async i => { const r = await admin.call('sig.check', { id: m._id, index: i }); assert.equal(r.ok, true, JSON.stringify(r).slice(0, 400)); return r; };
+  const none = await chk(0);
+  assert.equal(none.summary.overall, 'NO_SIGNATURE');
+  assert.match(none.report.document.format, /без електронен подпис/);
+  const det = await chk(1);
+  assert.equal(det.summary.overall, 'TOTAL-PASSED', JSON.stringify(det.report.signatures[0]).slice(0, 1500));
+  assert.equal(det.report.document.signedFile, 'решение.docx');
+  assert.match(det.report.signatures[0].level, /^CAdES-BASELINE-B \(отделен/);
+  assert.equal(det.summary.qes, 1);
+  const env1 = await chk(2);
+  assert.equal(env1.summary.overall, 'TOTAL-PASSED');
+  assert.match(env1.report.document.format, /\.p7m/);
+  assert.equal(env1.report.document.contentSize, doc.length);
+  const x = await chk(3);
+  assert.equal(x.summary.overall, 'NOT_SUPPORTED');
+  const lone = await chk(4);
+  assert.equal(lone.report.signatures[0].indication, 'INDETERMINATE');
+  assert.equal(lone.report.signatures[0].subIndication, 'SIGNED_DATA_NOT_FOUND');
+  // протокол и за файл без подпис – удостоверява отпечатъците
+  const p = await admin.call('sig.protocol', { id: m._id, index: 0 });
+  assert.equal(p.ok, true, JSON.stringify(p).slice(0, 300));
+  assert.equal(p.payload.report.summary.overall, 'NO_SIGNATURE');
+  assert.match(p.payload.report.document.sha256, /^[0-9A-F]{64}$/);
 });

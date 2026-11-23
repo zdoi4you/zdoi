@@ -3567,22 +3567,23 @@ async function ticketPage(no) {
 
 const PROTOCOL_KIND = 'Протокол за проверка на подпис';
 const isPdfAtt = a => /pdf/i.test(a.contentType || '') || /\.pdf$/i.test(a.name || '');
-const SIG_IND = { 'TOTAL-PASSED': 'потвърден', 'TOTAL-FAILED': 'невалиден', INDETERMINATE: 'неопределен', NO_SIGNATURE: 'без подпис' };
+const SIG_IND = { 'TOTAL-PASSED': 'потвърден', 'TOTAL-FAILED': 'невалиден', INDETERMINATE: 'неопределен', NO_SIGNATURE: 'без електронен подпис', NOT_SUPPORTED: 'неподдържан формат на подписа' };
+const isSigned = a => isPdfAtt(a) || /\.(p7s|p7m|sig)$/i.test(a.name || '') || /pkcs7/i.test(a.contentType || '');
 const SIG_SUB = {
   HASH_FAILURE: 'съдържанието е променено след подписването', SIG_CRYPTO_FAILURE: 'подписът не съответства на ключа', REVOKED: 'удостоверението е прекратено/спряно преди подписа',
   REVOKED_NO_POE: 'прекратено след подписа, но без удостоверение за време', OUT_OF_BOUNDS_NO_POE: 'удостоверението не е било валидно към декларираното време', EXPIRED: 'удостоверението е изтекло',
-  NO_CERTIFICATE_CHAIN_FOUND: 'издателят не е в доверителен списък', REVOCATION_UNKNOWN: 'статусът при доставчика не може да се провери', NO_SIGNING_CERTIFICATE_FOUND: 'липсва удостоверението на подписващия'
+  SIGNED_DATA_NOT_FOUND: 'подписаният файл (към отделния подпис) не е намерен', NO_CERTIFICATE_CHAIN_FOUND: 'издателят не е в доверителен списък', REVOCATION_UNKNOWN: 'статусът при доставчика не може да се провери', NO_SIGNING_CERTIFICATE_FOUND: 'липсва удостоверението на подписващия'
 };
 const sigWhen = iso => (iso ? new Date(iso).toLocaleString('bg-BG', { timeZone: 'Europe/Sofia', dateStyle: 'short', timeStyle: 'medium' }) : '—');
 const yesNo = v => (v ? 'да' : 'не');
 
 /* отметката до прикачения PDF: резултатът от последната проверка */
 function sigBadge(a, onClick) {
-  if (!isPdfAtt(a) || !a.fileId) return null;
+  if (!a.fileId) return null;
   const x = a.sig;
   if (!x) return h('button', { type: 'button', class: 'btn sm', title: 'Проверка на електронните подписи (eIDAS, ЗЕДЕУУ)', onclick: onClick }, 'Провери подписа');
   const cls = x.overall === 'TOTAL-PASSED' ? 'ok' : x.overall === 'TOTAL-FAILED' ? 'bad' : x.overall === 'NO_SIGNATURE' ? '' : 'warn';
-  const label = x.overall === 'TOTAL-PASSED' ? (x.qes ? '✔ КЕП' + (x.qes > 1 ? ' ×' + x.qes : '') : '✔ подпис') : x.overall === 'TOTAL-FAILED' ? '✖ невалиден подпис' : x.overall === 'NO_SIGNATURE' ? 'без подпис' : '⚠ неопределен';
+  const label = x.overall === 'TOTAL-PASSED' ? (x.qes ? '✔ КЕП' + (x.qes > 1 ? ' ×' + x.qes : '') : '✔ подпис') : x.overall === 'TOTAL-FAILED' ? '✖ невалиден подпис' : x.overall === 'NO_SIGNATURE' ? 'без подпис' : x.overall === 'NOT_SUPPORTED' ? '⚠ формат' : '⚠ неопределен';
   return h('button', { type: 'button', class: 'pill ' + cls + ' sig-pill', title: (x.signers || []).join('; ') + ' · проверено ' + sigWhen(x.at) + ' – отвори техническите данни', onclick: onClick }, label);
 }
 
@@ -3602,7 +3603,12 @@ function sigFullReport(rep) {
   const ovCls = sum.overall === 'TOTAL-PASSED' ? 'ok' : sum.overall === 'TOTAL-FAILED' ? 'bad' : sum.overall === 'NO_SIGNATURE' ? '' : 'warn';
   return h('div', { class: 'stack' },
     h('div', { class: 'head m-0' }, h('h3', { class: 'm-0' }, doc.name), h('span', { class: 'pill ' + ovCls }, 'Общ резултат: ' + (SIG_IND[sum.overall] || sum.overall))),
-    kv([['Размер', doc.size + ' байта'], ['SHA-256', h('span', { class: 'mono small' }, doc.sha256)], ['Подписи / печати за време', sum.count + ' / ' + sum.timestamps], ['Проверено', sigWhen(rep.checkedAt)]]),
+    kv([['Формат', doc.format || '—'], ['Размер', doc.size + ' байта'], ['SHA-256', h('span', { class: 'mono small' }, doc.sha256)],
+      doc.signedFile ? ['Подписан файл (отделен подпис)', doc.signedFile + ' · SHA-256 ' + doc.signedFileSha256] : null,
+      doc.contentSha256 ? ['Вграденото съдържание', (doc.contentType || 'файл') + ', ' + doc.contentSize + ' байта · SHA-256 ' + doc.contentSha256] : null,
+      ['Подписи / печати за време', sum.count + ' / ' + sum.timestamps], ['Проверено', sigWhen(rep.checkedAt)]]),
+    doc.unsupported ? h('p', { class: 'warnbox m-0' }, doc.unsupported) : null,
+    sum.overall === 'NO_SIGNATURE' ? h('p', { class: 'small muted m-0' }, 'Във файла не е открит електронен подпис. Протоколът удостоверява кой файл е получен (отпечатъци SHA-256 и SHA-512), откъде и кога.') : null,
     (rep.legal || []).map(x => h('p', { class: 'small md-note m-0' }, x)),
     rep.signatures.map((s, i) => h('section', { class: 'card stack sig-card' },
       h('div', { class: 'head m-0' }, h('b', null, 'Подпис ' + (i + 1) + (s.kind === 'docTimestamp' ? ' – документен печат за време' : s.signer ? ' – ' + s.signer.name + (s.signer.org ? ', ' + s.signer.org : '') : '')),
@@ -3634,7 +3640,7 @@ async function sigDialog(m, i, d, reload) {
   try {
     const r = await api('sig.check', { id: m._id, index: i });
     box.replaceChildren(sigFullReport(r.report));
-    const canProto = d && m.regNo && r.report.summary.count && can('docs') && d.request && d.request.locked !== 'Да';
+    const canProto = d && m.regNo && can('docs') && d.request && d.request.locked !== 'Да';
     if (canProto) actions.prepend(h('button', { type: 'button', class: 'btn primary', title: 'Документ по преписката с Изх. №, подписан с вашия КЕП – доказателство по делото', onclick: async e => {
       e.target.disabled = true;
       try { dlg.close(); await sigProtocol(m, i, d, reload); } catch (ex) { toast(ex.message); }
@@ -3659,7 +3665,7 @@ async function sigProtocol(m, i, d, reload) {
 const sigTried = new Set();
 async function autoSigCheck(mails, reload) {
   const todo = [];
-  mails.forEach(m => { if (m.direction === 'Входяща') (m.attachments || []).forEach((a, i) => { const k = m._id + ':' + i; if (isPdfAtt(a) && a.fileId && !a.sig && !sigTried.has(k)) { sigTried.add(k); todo.push([m, i]); } }); });
+  mails.forEach(m => { if (m.direction === 'Входяща') (m.attachments || []).forEach((a, i) => { const k = m._id + ':' + i; if (isSigned(a) && a.fileId && !a.sig && !sigTried.has(k)) { sigTried.add(k); todo.push([m, i]); } }); });
   let done = 0;
   for (const [m, i] of todo.slice(0, 6)) { try { await api('sig.check', { id: m._id, index: i }); done++; } catch (_) { /* следващия път */ } }
   if (done && reload) reload();

@@ -48,9 +48,7 @@ const QC_TYPES = { '0.4.0.1862.1.6.1': 'esign – електронен подп�
 const DN_NAMES = { '2.5.4.3': 'CN', '2.5.4.5': 'SERIALNUMBER', '2.5.4.42': 'G', '2.5.4.4': 'SN', '2.5.4.10': 'O', '2.5.4.11': 'OU', '2.5.4.6': 'C', '2.5.4.7': 'L', '2.5.4.8': 'ST', '2.5.4.97': 'organizationIdentifier', '1.2.840.113549.1.9.1': 'E', '2.5.4.12': 'T', '2.5.4.9': 'STREET', '2.5.4.17': 'PostalCode' };
 const KU_NAMES = ['digitalSignature', 'nonRepudiation (contentCommitment)', 'keyEncipherment', 'dataEncipherment', 'keyAgreement', 'keyCertSign', 'cRLSign', 'encipherOnly', 'decipherOnly'];
 
-/* личните идентификатори (ЕГН/ЛНЧ в PNOBG-…, IDCBG-…) се маскират: в протокола остават първите 2 и последните 2 цифри */
-const maskPersonal = s => String(s || '').replace(/((?:PNO|IDC|PAS|TIN)[A-Z]{2}-)(\d{2})\d+(\d{2})/g, '$1$2******$3').replace(/\b(\d{2})\d{6}(\d{2})\b/g, '$1******$2');
-
+/* личните идентификатори (PNOBG-…, IDCBG-…) се показват изцяло – така са в удостоверението и така се доказва подписващият */
 function dnString(raw) {
   const n = D.read(raw), parts = [];
   for (const rdn of n.children || []) for (const atv of rdn.children || []) {
@@ -58,7 +56,7 @@ function dnString(raw) {
     const val = new TextDecoder(v.tag === 0x1e ? 'utf-16be' : 'utf-8').decode(v.body);
     parts.push((DN_NAMES[id] || id) + '=' + val);
   }
-  return maskPersonal(parts.join(', '));
+  return parts.join(', ');
 }
 
 /* разширенията на удостоверението: oid → { critical, value } */
@@ -104,7 +102,7 @@ export async function certDetails(cert) {
   let aki = '';
   if (ext[OIDS.aki]) { const k = (D.read(ext[OIDS.aki].value).children || []).find(x => x.tag === 0x80); if (k) aki = hex(k.body); }
   return {
-    subject: dnString(cert.subjectRaw), issuer: dnString(cert.issuerRaw), name: cert.name, org: cert.org, id: maskPersonal(cert.id),
+    subject: dnString(cert.subjectRaw), issuer: dnString(cert.issuerRaw), name: cert.name, org: cert.org, id: cert.id,
     serial: hex(cert.serial).toUpperCase(), sha256: (await sha256hex(cert.der)).toUpperCase(), spkiSha256: await sha256hex(cert.spki),
     notBefore: cert.notBefore ? cert.notBefore.toISOString() : '', notAfter: cert.notAfter ? cert.notAfter.toISOString() : '',
     key: keyInfo(cert), sigAlg: SIG_NAMES[cert.sigAlg] || cert.sigAlg, keyUsage: ku, policies, qc, ski, aki,
@@ -121,7 +119,14 @@ export function parseCms(der) {
   const eContent = enc.children[1] ? enc.children[1].children[0].body : null;
   const certsNode = parts.find(x => x.tag === 0xa0);
   const certs = certsNode ? certsNode.children.filter(x => x.tag === 0x30).map(x => x.raw) : [];
-  const si = parts[parts.length - 1].children[0], f = si.children;
+  const head = { eContentType, eContent, certs };
+  // всеки SignerInfo (съподписи в CAdES); първият – и в самия обект, както досега
+  const signers = parts[parts.length - 1].children.map(si => Object.assign({}, head, signerInfo(si)));
+  return Object.assign({ signers }, signers[0] || head);
+}
+
+function signerInfo(si) {
+  const f = si.children;
   const sid = f[1];
   const digestAlg = D.oidStr(f[2].children[0].body);
   let i = 3, attrsNode = null;
@@ -132,7 +137,7 @@ export function parseCms(der) {
   if (attrsNode) for (const a of attrsNode.children) attrs[D.oidStr(a.children[0].body)] = a.children[1].children[0];
   if (unsignedNode) for (const a of unsignedNode.children) unsigned[D.oidStr(a.children[0].body)] = a.children[1].children;
   return {
-    eContentType, eContent, certs, digestAlg, sigAlg, signature, attrs, unsigned,
+    digestAlg, sigAlg, signature, attrs, unsigned,
     sidSerial: sid.tag === 0x30 ? sid.children[1].body : null, sidSki: sid.tag === 0x80 ? sid.body : null,
     attrsDer: attrsNode ? D.concat([Uint8Array.of(0x31), attrsNode.raw.subarray(1)]) : null
   };
@@ -351,20 +356,31 @@ async function checkOne(app, pdf, latin, m, now) {
     delete s.timestamp.date;
     return s;
   }
+  return checkSigner(app, s, cms, signed, pdfDate(win), now);
+}
+
+/* подписващият (SignerInfo): цялост, подпис, време, удостоверение, доверителен списък, прекратяване, заключение */
+async function checkSigner(app, s, cms, signed, fallbackTime, now) {
   s.kind = 'signature';
   const alg = HASH[cms.digestAlg];
   s.digestAlg = alg || cms.digestAlg;
   s.sigAlg = SIG_NAMES[cms.sigAlg] || cms.sigAlg;
-  s.checks.integrity = !!(alg && cms.attrs[D.OID.messageDigest] && eq(await digest(alg, signed), cms.attrs[D.OID.messageDigest].body));
   const cert = signerCert(cms);
   if (!cert) { s.error = 'липсва удостоверението на подписващия'; s.indication = 'INDETERMINATE'; s.subIndication = 'NO_SIGNING_CERTIFICATE_FOUND'; return s; }
-  s.checks.signature = !!cms.attrsDer && await verifySig(cert.spki, verifyAlg(cert, cms), cms.signature, cms.attrsDer).catch(() => false);
+  if (cms.attrsDer) {
+    s.checks.integrity = !signed ? null : !!(alg && cms.attrs[D.OID.messageDigest] && eq(await digest(alg, signed), cms.attrs[D.OID.messageDigest].body));
+    s.checks.signature = await verifySig(cert.spki, verifyAlg(cert, cms), cms.signature, cms.attrsDer).catch(() => false);
+  } else {
+    // без подписани атрибути (стар PKCS#7): подписът е направо върху съдържанието
+    s.checks.signature = signed ? await verifySig(cert.spki, verifyAlg(cert, cms), cms.signature, signed).catch(() => false) : null;
+    s.checks.integrity = s.checks.signature;
+  }
   s.checks.signingCertAttr = !!(cms.attrs[D.OID.signingCertV2] || cms.attrs[OIDS.signingCert]);
   s.signer = await certDetails(cert);
 
   // време: удостоверение за време (доказателство), иначе декларираното
   const stAttr = cms.attrs[OIDS.signingTime];
-  const claimed = stAttr ? asnTime(stAttr) : pdfDate(win);
+  const claimed = stAttr ? asnTime(stAttr) : fallbackTime;
   s.claimedTime = claimed ? claimed.toISOString() : '';
   s.claimedSource = stAttr ? 'атрибут signingTime' : claimed ? 'поле /M на подписа (часовник на подписващия)' : '';
   if (cms.unsigned[OIDS.tst] && cms.unsigned[OIDS.tst][0]) s.timestamp = await checkTimestamp(app, cms.unsigned[OIDS.tst][0].raw, cms.signature);
@@ -395,15 +411,16 @@ async function checkOne(app, pdf, latin, m, now) {
   // заключение (ETSI EN 319 102-1)
   let ind = 'TOTAL-PASSED', sub = '';
   const set = (i, x) => { if (ind === 'TOTAL-FAILED') return; if (i === 'TOTAL-FAILED' || ind === 'TOTAL-PASSED') { ind = i; sub = x; } };
-  if (!s.checks.integrity) set('TOTAL-FAILED', 'HASH_FAILURE');
-  if (!s.checks.signature) set('TOTAL-FAILED', 'SIG_CRYPTO_FAILURE');
+  if (s.checks.integrity === false) set('TOTAL-FAILED', 'HASH_FAILURE');
+  if (s.checks.signature === false) set('TOTAL-FAILED', 'SIG_CRYPTO_FAILURE');
+  if (s.checks.integrity === null) set('INDETERMINATE', 'SIGNED_DATA_NOT_FOUND');
   if (rev.status === 'revoked' && (!revokedAt || revokedAt <= T)) set('TOTAL-FAILED', 'REVOKED');
   if (rev.status === 'revoked' && revokedAt && revokedAt > T && !poe) set('INDETERMINATE', 'REVOKED_NO_POE');
   if (!s.checks.validAtTime) set(poe ? 'TOTAL-FAILED' : 'INDETERMINATE', poe ? 'EXPIRED' : 'OUT_OF_BOUNDS_NO_POE');
   if (!s.trust.found) set('INDETERMINATE', 'NO_CERTIFICATE_CHAIN_FOUND');
   if (rev.status === 'unknown') set('INDETERMINATE', 'REVOCATION_UNKNOWN');
   s.indication = ind; s.subIndication = sub;
-  if (!s.coversAll) s.warnings.push('След този подпис във файла има добавени ' + s.unsignedBytes + ' байта (следващ подпис, печат за време или промяна) – те не са обхванати от него.');
+  if (s.coversAll === false) s.warnings.push('След този подпис във файла има добавени ' + s.unsignedBytes + ' байта (следващ подпис, печат за време или промяна) – те не са обхванати от него.');
   if (rev.status === 'revoked' && revokedAt && revokedAt > T) s.warnings.push('Удостоверението е прекратено/спряно на ' + fmtBg(revokedAt) + ' – след момента на подписа.');
   if (!s.checks.validNow && s.checks.validAtTime) s.warnings.push('Удостоверението вече е изтекло, но е било валидно към момента на подписа.');
   if (s.trust.found && s.trust.statusNow !== s.trust.statusAt) s.warnings.push('Статусът на услугата в Доверителния списък сега е „' + s.trust.statusNow + '“ (към момента на подписа – „' + s.trust.statusAt + '“).');
@@ -434,9 +451,11 @@ export const METHOD = [
   'Проверката е техническа, извършена от системата и потвърдена с квалифицирания електронен подпис на служителя, изготвил протокола. Тя не е квалифицирана услуга по валидиране по чл. 33 от Регламента; при спор може да се поиска и проверка от квалифициран доставчик.'
 ];
 
-/* целият документ: данни за файла, всеки подпис, обобщение */
+const isPdfBytes = b => b && b.length > 4 && String.fromCharCode(...b.slice(0, 4)) === '%PDF';
+
+/* целият PDF: данни за файла, всеки подпис, обобщение */
 export async function validatePdf(app, pdf, meta = {}) {
-  if (!pdf || pdf.length < 100 || String.fromCharCode(...pdf.slice(0, 4)) !== '%PDF') fail('value', 'Файлът не е PDF. Проверката е за PDF документи (PAdES).');
+  if (!isPdfBytes(pdf) || pdf.length < 100) fail('value', 'Файлът не е PDF.');
   const now = new Date();
   const latin = new TextDecoder('latin1').decode(pdf);
   const re = /\/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]/g;
@@ -447,21 +466,91 @@ export async function validatePdf(app, pdf, meta = {}) {
   for (const x of found) sigs.push(await checkOne(app, pdf, latin, x, now));
   const hasDss = /\/DSS\s/.test(latin) || /\/Type\s*\/DSS/.test(latin);
   sigs.forEach((s, i) => { if (s.kind === 'signature') s.level = levelOf(s, hasDss, sigs.slice(i + 1).some(y => y.kind === 'docTimestamp' && y.timestamp && y.timestamp.ok)); });
+  const last = sigs[sigs.length - 1];
+  return finish(sigs, pdf, meta, now, {
+    format: sigs.length ? 'PDF с вграден подпис (PAdES / PDF PKCS#7)' : 'PDF без електронен подпис',
+    revisions: (latin.match(/%%EOF/g) || []).length, lastCoversAll: !!(last && last.coversAll), hasDss
+  });
+}
+
+/* CMS от файл: DER, PEM („-----BEGIN PKCS7-----“) или base64 */
+function cmsFrom(bytes) {
+  const tryDer = b => { try { const n = D.read(b); if (n.tag === 0x30 && n.end <= b.length + 2 && D.oidStr(n.children[0].body) === D.OID.signedData) return n.raw; } catch (_) { /* не е CMS */ } return null; };
+  if (bytes[0] === 0x30) return tryDer(bytes);
+  const txt = new TextDecoder('latin1').decode(bytes.subarray(0, Math.min(bytes.length, 20 * 1048576)));
+  const pem = /-----BEGIN (?:PKCS7|CMS|SIGNED DATA)-----([\s\S]*?)-----END/.exec(txt);
+  const b64 = pem ? pem[1] : /^[A-Za-z0-9+/=\s]+$/.test(txt.slice(0, 4000)) && txt.length > 100 ? txt : '';
+  if (!b64) return null;
+  try { return tryDer(D.unb64(b64)); } catch (_) { return null; }
+}
+
+/*
+ * Всеки файл: PDF (PAdES); CAdES – .p7m/.p7s с вградено съдържание или отделен .p7s към друг файл (related: файловете
+ * от същото писмо – търси се този, чийто хеш съвпада с подписания); XML с подпис (XAdES) и ASiC – отбелязват се като
+ * неподдържан формат; всичко останало – без електронен подпис (протоколът пак удостоверява отпечатъците на файла).
+ */
+export async function validateFile(app, bytes, meta = {}, related) {
+  const now = new Date();
+  const name = String(meta.name || '');
+  if (!bytes || !bytes.length) fail('value', 'Файлът е празен.');
+  if (isPdfBytes(bytes)) return validatePdf(app, bytes, meta);
+  const der = cmsFrom(bytes);
+  if (der) {
+    let cms;
+    try { cms = parseCms(der); } catch (_) { return finish([{ kind: 'signature', error: 'подписът (CMS) не може да бъде разчетен', indication: 'INDETERMINATE', warnings: [], checks: {} }], bytes, meta, now, { format: 'CAdES (повреден)' }); }
+    let content = cms.eContent, detachedOf = null;
+    if (!content && typeof related === 'function') {
+      // отделен подпис: файлът, чийто хеш съвпада с messageDigest на първия подписващ
+      const s0 = cms.signers[0], alg = s0 && HASH[s0.digestAlg], md = s0 && s0.attrs[D.OID.messageDigest];
+      for (const f of await related()) {
+        if (!f.bytes || f.bytes === bytes) continue;
+        if (alg && md && eq(await digest(alg, f.bytes), md.body)) { content = f.bytes; detachedOf = f; break; }
+      }
+      if (!content) {
+        const base = name.replace(/\.(p7s|sig|p7m)$/i, '');
+        const byName = (await related()).find(f => f.name === base);
+        if (byName) { content = byName.bytes; detachedOf = byName; }
+      }
+    }
+    const sigs = [];
+    for (const signer of cms.signers) {
+      const s = { warnings: [], checks: {}, subFilter: '' };
+      await checkSigner(app, s, Object.assign({}, signer), content, null, now);
+      if (!content) s.warnings.push('Отделен подпис (.p7s): подписаният файл не е намерен сред файловете в писмото – целостта не може да се провери. Регистрирайте подписания файл в същото писмо и проверете отново.');
+      if (detachedOf) s.signedFile = detachedOf.name;
+      s.level = 'CAdES-BASELINE-' + (s.timestamp && s.timestamp.ok ? 'T' : 'B') + (cms.eContent ? ' (с вградено съдържание)' : ' (отделен подпис)');
+      sigs.push(s);
+    }
+    const doc = { format: cms.eContent ? 'CAdES с вградено съдържание (.p7m)' : 'CAdES – отделен подпис (.p7s)' };
+    if (cms.eContent) Object.assign(doc, { contentSize: cms.eContent.length, contentSha256: (await sha256hex(cms.eContent)).toUpperCase(), contentType: isPdfBytes(cms.eContent) ? 'PDF' : '' });
+    if (detachedOf) Object.assign(doc, { signedFile: detachedOf.name, signedFileSize: detachedOf.bytes.length, signedFileSha256: (await sha256hex(detachedOf.bytes)).toUpperCase() });
+    return finish(sigs, bytes, meta, now, doc);
+  }
+  const head = new TextDecoder('utf-8').decode(bytes.subarray(0, Math.min(bytes.length, 200000)));
+  if (/^\s*(<\?xml|<)/.test(head) && /<(\w+:)?Signature[\s>][\s\S]*SignedInfo/.test(head)) {
+    return finish([], bytes, meta, now, { format: 'XML с електронен подпис (XMLDSig/XAdES)', unsupported: 'Подписът е във формат XAdES – системата още не го проверява. Проверете го в програмата на доставчика или при квалифициран доставчик на услуга по валидиране.' });
+  }
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b && /META-INF\/(signatures|.*\.p7s|.*\.xml)/i.test(new TextDecoder('latin1').decode(bytes.subarray(0, Math.min(bytes.length, 4 * 1048576))))) {
+    return finish([], bytes, meta, now, { format: 'ASiC контейнер (подписан ZIP)', unsupported: 'Контейнерът ASiC още не се проверява от системата. Отворете го в програмата на доставчика.' });
+  }
+  return finish([], bytes, meta, now, { format: 'файл без електронен подпис' + (meta.contentType ? ' (' + meta.contentType + ')' : '') });
+}
+
+/* общото: обобщение, правно действие, данни за файла */
+async function finish(sigs, bytes, meta, now, docExtra) {
   const real = sigs.filter(s => s.kind === 'signature');
-  const overall = !real.length ? 'NO_SIGNATURE' : real.some(s => s.indication === 'TOTAL-FAILED') ? 'TOTAL-FAILED' : real.every(s => s.indication === 'TOTAL-PASSED') ? 'TOTAL-PASSED' : 'INDETERMINATE';
+  const overall = !real.length ? (docExtra.unsupported ? 'NOT_SUPPORTED' : 'NO_SIGNATURE') : real.some(s => s.indication === 'TOTAL-FAILED') ? 'TOTAL-FAILED' : real.every(s => s.indication === 'TOTAL-PASSED') ? 'TOTAL-PASSED' : 'INDETERMINATE';
   const legal = [];
   if (real.some(s => s.qes && !s.seal)) legal.push(LEGAL.qesig);
   if (real.some(s => s.qes && s.seal)) legal.push(LEGAL.qeseal);
   if (real.some(s => s.indication === 'TOTAL-PASSED' && !s.qes)) legal.push(LEGAL.ades);
   if (sigs.some(s => s.timestamp && s.timestamp.qualified)) legal.push(LEGAL.qtst);
-  const last = sigs[sigs.length - 1];
   return {
     format: 'zdoi-sigcheck/1', validator: VALIDATOR, checkedAt: now.toISOString(), checkedAtLocal: stamp(now),
-    document: {
-      name: line(meta.name || 'документ.pdf', 200), size: pdf.length, sha256: (await sha256hex(pdf)).toUpperCase(),
-      sha512: hex(await digest('SHA-512', pdf)).toUpperCase(), revisions: (latin.match(/%%EOF/g) || []).length,
-      lastCoversAll: !!(last && last.coversAll), hasDss
-    },
+    document: Object.assign({
+      name: line(meta.name || 'документ', 200), size: bytes.length, sha256: (await sha256hex(bytes)).toUpperCase(),
+      sha512: hex(await digest('SHA-512', bytes)).toUpperCase()
+    }, docExtra),
     signatures: sigs,
     summary: {
       count: real.length, timestamps: sigs.length - real.length, overall,

@@ -8,7 +8,7 @@
 import { fail, str, line, stamp, todayIso, isoDate, oneOf, intIn, isEmail, validEik, view, byDesc } from './util.js';
 import { term, termMonths, daysBetween } from './calendar.js';
 import { audit, mail, insertUnique, setting, setSetting, throttle } from './core.js';
-import { validatePdf, summaryOf } from './validate.js';
+import { validateFile, summaryOf } from './validate.js';
 import { SCHEMA } from './schema.js';
 import { notifyOf } from './auth.js';
 import { usersBrief, assignCheck } from './users.js';
@@ -321,7 +321,6 @@ async function newDoc(app, ctx, r, kind, title, payload) {
 /* ---------- проверка на подписите в получените документи (eIDAS, ЗЕДЕУУ) и протокол за съда ---------- */
 
 export const PROTOCOL_KIND = 'Протокол за проверка на подпис';
-const isPdf = a => /pdf/i.test(a.contentType || '') || /\.pdf$/i.test(a.name || '');
 
 async function attachmentOf(app, ctx, d) {
   const m = await app.store.get('mail', str(d.id, 20));
@@ -336,11 +335,19 @@ async function attachmentOf(app, ctx, d) {
 
 async function checkAttachment(app, ctx, d) {
   const x = await attachmentOf(app, ctx, d);
-  if (!isPdf(x.a)) fail('value', 'Проверката е за PDF документи (PAdES). Файлът „' + x.a.name + '“ не е PDF.');
   const t = await throttle(app, 'sigcheck|' + ctx.username, 60);
   if (await t.blocked()) fail('locked', 'Твърде много проверки. Опитайте след 15 минути.');
   await t.hit();
-  const report = await validatePdf(app, await app.store.downloadFile(x.a.fileId), { name: x.a.name });
+  // отделен подпис (.p7s): подписаният файл се търси сред другите файлове в писмото
+  let others = null;
+  const related = async () => {
+    if (!others) {
+      others = [];
+      for (const [j, o] of x.atts.entries()) if (j !== x.i && o && o.fileId) { try { others.push({ name: o.name, bytes: await app.store.downloadFile(o.fileId) }); } catch (_) { /* недостъпен */ } }
+    }
+    return others;
+  };
+  const report = await validateFile(app, await app.store.downloadFile(x.a.fileId), { name: x.a.name, contentType: x.a.contentType || '' }, related);
   x.a.sig = summaryOf(report);
   await app.store.patch('mail', x.m._id, { attachments: JSON.stringify(x.atts) });
   return Object.assign(x, { report });
@@ -359,7 +366,6 @@ export async function sigProtocol(d, ctx, app) {
   if (!x.m.regNo) fail('value', 'Писмото не е разпределено към преписка.');
   const r = await findReq(app, x.m.regNo, ctx);
   unlocked(r);
-  if (!x.report.summary.count) fail('value', 'В документа няма електронен подпис – протокол не се изготвя.');
   const u = (await app.store.list('users', { username: ctx.username }))[0] || {};
   const body = {
     report: x.report,

@@ -281,12 +281,12 @@ export function courtDocDef(p) {
 
 /* ---------- протокол за проверка на електронните подписи (доказателство по делото) ---------- */
 
-const IND = { 'TOTAL-PASSED': 'ПОТВЪРДЕН (TOTAL-PASSED)', 'TOTAL-FAILED': 'НЕВАЛИДЕН (TOTAL-FAILED)', INDETERMINATE: 'НЕОПРЕДЕЛЕН (INDETERMINATE)', NO_SIGNATURE: 'НЯМА ПОДПИС' };
+const IND = { 'TOTAL-PASSED': 'ПОТВЪРДЕН (TOTAL-PASSED)', 'TOTAL-FAILED': 'НЕВАЛИДЕН (TOTAL-FAILED)', INDETERMINATE: 'НЕОПРЕДЕЛЕН (INDETERMINATE)', NO_SIGNATURE: 'НЯМА ЕЛЕКТРОНЕН ПОДПИС', NOT_SUPPORTED: 'НЕПОДДЪРЖАН ФОРМАТ НА ПОДПИСА' };
 const SUB = {
   HASH_FAILURE: 'съдържанието е променено след подписването', SIG_CRYPTO_FAILURE: 'подписът не съответства на ключа', REVOKED: 'удостоверението е прекратено/спряно преди подписа',
   REVOKED_NO_POE: 'удостоверението е прекратено след подписа, но липсва удостоверение за време', OUT_OF_BOUNDS_NO_POE: 'удостоверението не е било валидно към декларираното време',
   EXPIRED: 'удостоверението е изтекло', NO_CERTIFICATE_CHAIN_FOUND: 'издателят не е намерен в доверителен списък', REVOCATION_UNKNOWN: 'статусът на удостоверението не може да се провери',
-  NO_SIGNING_CERTIFICATE_FOUND: 'липсва удостоверението на подписващия'
+  NO_SIGNING_CERTIFICATE_FOUND: 'липсва удостоверението на подписващия', SIGNED_DATA_NOT_FOUND: 'подписаният файл (към отделния подпис) не е намерен'
 };
 const yes = v => (v ? 'да' : 'не');
 const t = iso => (iso ? new Date(iso).toLocaleString('bg-BG', { timeZone: 'Europe/Sofia', dateStyle: 'short', timeStyle: 'medium' }) + ' ч.' : '—');
@@ -321,8 +321,11 @@ export function protocolDef(p) {
 
   content.push(h3('1. Проверен документ'));
   content.push(kvT([
-    ['Файл', doc.name], ['Размер', doc.size + ' байта'], ['SHA-256 на файла', mono(doc.sha256)], ['SHA-512 на файла', mono(doc.sha512)],
-    ['Версии (ревизии) в PDF', doc.revisions], ['Последният подпис обхваща целия файл', yes(doc.lastCoversAll)], ['Данни за дългосрочна проверка (DSS)', yes(doc.hasDss)],
+    ['Файл', doc.name], ['Формат', doc.format], ['Размер', doc.size + ' байта'], ['SHA-256 на файла', mono(doc.sha256)], ['SHA-512 на файла', mono(doc.sha512)],
+    doc.signedFile ? ['Подписан файл (към отделния подпис)', doc.signedFile + ', ' + doc.signedFileSize + ' байта'] : null, doc.signedFile ? ['SHA-256 на подписания файл', mono(doc.signedFileSha256)] : null,
+    doc.contentSha256 ? ['Вградено съдържание', (doc.contentType || 'файл') + ', ' + doc.contentSize + ' байта'] : null, doc.contentSha256 ? ['SHA-256 на вграденото съдържание', mono(doc.contentSha256)] : null,
+    doc.revisions !== undefined ? ['Версии (ревизии) в PDF', doc.revisions] : null, doc.revisions !== undefined && sigs.length ? ['Последният подпис обхваща целия файл', yes(doc.lastCoversAll)] : null,
+    doc.hasDss !== undefined ? ['Данни за дългосрочна проверка (DSS)', yes(doc.hasDss)] : null,
     ['Преписка', src.regNo + (src.entity ? ' – ' + src.entity : '')], ['Получен', (src.channel || '') + (src.receivedAt ? ' на ' + t(src.receivedAt) : '')],
     src.from ? ['Подател', src.from] : null, src.subject ? ['Тема / описание', src.subject] : null, src.ref ? ['Идентификатор (ССЕВ, вх. №)', src.ref] : null,
     src.messageId ? ['Message-ID', mono(src.messageId)] : null
@@ -335,9 +338,11 @@ export function protocolDef(p) {
     ...sigs.map((s, i) => [`Подпис ${i + 1}`, s.kind === 'docTimestamp' ? 'документен печат за време – ' + (IND[s.indication] || s.indication) + (s.timestamp && s.timestamp.time ? ', ' + t(s.timestamp.time) : '')
       : (s.signer ? s.signer.name + (s.signer.org ? ', ' + s.signer.org : '') : '—') + ' – ' + (IND[s.indication] || s.indication || 'грешка') + (s.subIndication ? ' (' + (SUB[s.subIndication] || s.subIndication) + ')' : '') + '\n' + (s.qualification || s.error || '')])
   ]));
+  if (doc.unsupported) content.push(P(doc.unsupported, { fontSize: 9 }));
+  if (sum.overall === 'NO_SIGNATURE') content.push(P('Във файла не е открит електронен подпис. Протоколът удостоверява съдържанието на получения файл чрез отпечатъците му (SHA-256 и SHA-512), източника и времето на получаване.', { fontSize: 9 }));
   (r.legal || []).forEach(x => content.push(P(x, { fontSize: 9 })));
 
-  content.push(h3('3. Технически данни'));
+  if (sigs.length) content.push(h3('3. Технически данни'));
   sigs.forEach((s, i) => {
     content.push({ text: `Подпис ${i + 1}` + (s.kind === 'docTimestamp' ? ' – документен печат за време' : s.signer ? ' – ' + s.signer.name : ''), bold: true, fontSize: 9.5, margin: [0, 6, 0, 3] });
     if (s.error) content.push(small('Грешка: ' + s.error, { color: '#B42318', margin: [0, 0, 0, 4] }));
